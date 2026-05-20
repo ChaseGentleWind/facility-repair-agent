@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+
+from app.config import settings
+
+
+class AgentState(str, Enum):
+    GREETING = "GREETING"
+    COLLECTING = "COLLECTING"
+    CONFIRMING = "CONFIRMING"
+    COMPLETED = "COMPLETED"
+    ESCALATED = "ESCALATED"
+
+
+@dataclass
+class TicketDraft:
+    description: str | None = None
+    building: str | None = None
+    floor: str | None = None
+    room: str | None = None
+    image_urls: list[str] = field(default_factory=list)
+
+    def missing_required(self) -> list[str]:
+        missing = []
+        if not self.description:
+            missing.append("description")
+        if not self.building:
+            missing.append("building")
+        if not self.floor:
+            missing.append("floor")
+        return missing
+
+    def to_dict(self) -> dict:
+        return {
+            "description": self.description,
+            "building": self.building,
+            "floor": self.floor,
+            "room": self.room,
+            "image_urls": self.image_urls,
+        }
+
+
+@dataclass
+class Session:
+    session_id: str
+    client_id: str
+    source: str
+    state: AgentState
+    history: list[dict]  # [{"role": "user"|"assistant", "content": "..."}]
+    draft: TicketDraft
+    created_at: datetime
+    expires_at: datetime
+    retry_count: int = 0
+
+
+# ── 内存会话存储 ──────────────────────────────────────────────────────────────
+
+_store: dict[str, Session] = {}
+
+
+def create_session(client_id: str, source: str) -> Session:
+    now = datetime.now()
+    session = Session(
+        session_id=f"sess_{uuid.uuid4().hex[:12]}",
+        client_id=client_id,
+        source=source,
+        state=AgentState.GREETING,
+        history=[],
+        draft=TicketDraft(),
+        created_at=now,
+        expires_at=now + timedelta(seconds=settings.session_ttl_seconds),
+    )
+    _store[session.session_id] = session
+    return session
+
+
+def get_session(session_id: str) -> Session | None:
+    session = _store.get(session_id)
+    if session is None:
+        return None
+    if session.expires_at < datetime.now():
+        del _store[session_id]
+        return None
+    return session
+
+
+def refresh_session(session: Session) -> None:
+    session.expires_at = datetime.now() + timedelta(seconds=settings.session_ttl_seconds)
