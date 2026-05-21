@@ -16,6 +16,12 @@ def build_ticket(session: Session) -> dict:
         "room": draft.room,
     }
 
+    ft_code = draft.fault_type_code or "000"
+    ft_name = draft.fault_type_name or "待分类"
+    priority = draft.repair_priority_rag or "MEDIUM"
+    confidence = draft.confidence or "low"
+    match_score = draft.rag_match_score
+
     return {
         "ticket_id": ticket_id,
         "session_id": session.session_id,
@@ -27,17 +33,15 @@ def build_ticket(session: Session) -> dict:
         "location": location,
         "problem": {
             "description": draft.description,
-            # normalized_description 由 P1 RAG 阶段填充
-            "normalized_description": None,
+            "normalized_description": draft.normalized_description,
         },
-        # fault_type / repair_priority 由 P1 RAG 阶段填充
         "fault_type": {
-            "code": "000",
-            "displayName": "待分类",
+            "code": ft_code,
+            "displayName": ft_name,
         },
-        "repair_priority": "MEDIUM",
-        "repair_type": "公司报修",
+        "repair_priority": priority,
+        "repair_type": draft.repair_type or "公司报修",
         "image_urls": draft.image_urls,
-        "confidence": "low",   # P1 RAG 接入后将根据匹配分数更新
-        "rag_match_score": None,
+        "confidence": confidence,
+        "rag_match_score": match_score,
     }

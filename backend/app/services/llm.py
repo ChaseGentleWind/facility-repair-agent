@@ -18,6 +18,20 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+
+def _clean_json(raw: str) -> dict:
+    """尝试从 LLM 返回的原始文本中提取第一个有效 JSON 对象。"""
+    text = raw.strip()
+    if text.startswith("```"):
+        first_nl = text.index("\n") if "\n" in text else 3
+        text = text[first_nl + 1 :]
+        if text.endswith("```"):
+            text = text[: -3]
+        text = text.strip()
+    decoder = json.JSONDecoder()
+    obj, _ = decoder.raw_decode(text)
+    return obj
+
 _client = AsyncOpenAI(
     api_key=settings.qwen_api_key,
     base_url=settings.qwen_base_url,
@@ -49,7 +63,7 @@ async def extract_fields(
             temperature=0.1,
             **_EXTRA,
         )
-        return json.loads(resp.choices[0].message.content)
+        return _clean_json(resp.choices[0].message.content)
     except Exception as exc:
         logger.warning("extract_fields failed: %s", exc)
         return {}

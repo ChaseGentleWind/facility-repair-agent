@@ -23,6 +23,14 @@ class TicketDraft:
     floor: str | None = None
     room: str | None = None
     image_urls: list[str] = field(default_factory=list)
+    # RAG 填充字段
+    normalized_description: str | None = None
+    fault_type_code: str | None = None
+    fault_type_name: str | None = None
+    repair_priority_rag: str | None = None
+    repair_type: str | None = None
+    confidence: str | None = None
+    rag_match_score: float | None = None
 
     def missing_required(self) -> list[str]:
         missing = []
@@ -35,13 +43,18 @@ class TicketDraft:
         return missing
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "description": self.description,
             "building": self.building,
             "floor": self.floor,
             "room": self.room,
             "image_urls": self.image_urls,
         }
+        if self.fault_type_name:
+            d["fault_type"] = self.fault_type_name
+        if self.repair_priority_rag:
+            d["priority"] = self.repair_priority_rag
+        return d
 
 
 @dataclass

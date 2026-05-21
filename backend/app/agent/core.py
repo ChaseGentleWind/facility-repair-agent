@@ -8,6 +8,7 @@ from app.agent.state import AgentState, Session, TicketDraft
 from app.agent.ticket_builder import build_ticket
 from app.config import settings
 from app.services import llm
+from app.services import rag
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,18 @@ async def _handle_collecting(
 
     # Step 2: 生成回复（流式）
     if not missing:
-        # 必填项齐全 → 生成确认摘要，切换到 CONFIRMING
+        # 必填项齐全 → RAG 检索 fault_type + priority
+        rag_result = await rag.search_fault(session.draft.description)
+        if rag_result:
+            session.draft.normalized_description = rag_result.normalized_description
+            session.draft.fault_type_code = rag_result.fault_type_code
+            session.draft.fault_type_name = rag_result.fault_type_name
+            session.draft.repair_priority_rag = rag_result.repair_priority
+            session.draft.repair_type = rag_result.repair_type
+            session.draft.confidence = rag_result.confidence
+            session.draft.rag_match_score = rag_result.match_score
+
+        # 生成确认摘要，切换到 CONFIRMING
         session.state = AgentState.CONFIRMING
         reply_text = ""
         async for chunk in llm.generate_confirmation_stream(session.draft, session.history):

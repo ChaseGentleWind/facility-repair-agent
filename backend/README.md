@@ -4,12 +4,22 @@
 
 ```bash
 cd backend
-pip install -r requirements.txt
-cp .env.example .env   # 填入真实的 QWEN_API_KEY
-python run.py
+uv sync                   # 安装依赖
+cp .env.example .env      # 填入真实的 API Key
+uv run python run.py      # 启动服务
 ```
 
 服务启动后访问 http://localhost:8000/docs 查看 Swagger 文档。
+
+## 数据入库（RAG）
+
+```bash
+# 完整流程：DeepSeek 清洗 + 向量化入库
+uv run python -m scripts.ingest_tickets
+
+# 跳过清洗，直接从已有 cleaned JSON 入库
+uv run python -m scripts.ingest_tickets --skip-clean
+```
 
 ## 测试对话流程
 
@@ -32,5 +42,10 @@ curl -N -X POST http://localhost:8000/api/v1/chat/message \
 | `QWEN_API_KEY` | DashScope API Key |
 | `QWEN_BASE_URL` | 模型接口地址 |
 | `QWEN_MODEL` | 模型名称 (qwen3.5-omni-flash) |
+| `DEEPSEEK_API_KEY` | DeepSeek API Key（离线清洗用） |
+| `DEEPSEEK_BASE_URL` | DeepSeek 接口地址 |
+| `DEEPSEEK_MODEL` | DeepSeek 模型名 (deepseek-chat) |
+| `EMBEDDING_MODEL_PATH` | Embedding 模型路径 (BAAI/bge-large-zh-v1.5) |
+| `CHROMA_PERSIST_DIR` | ChromaDB 本地存储目录 |
 | `SESSION_TTL_SECONDS` | 会话过期时间 |
 | `ALLOWED_ORIGINS` | CORS 允许的域名 |

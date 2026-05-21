@@ -21,3 +21,8 @@ class ChatMessage(BaseModel):
 class MessageRequest(BaseModel):
     session_id: str
     message: ChatMessage
+
+
+class UploadResponse(BaseModel):
+    image_url: str
+    file_size: int
