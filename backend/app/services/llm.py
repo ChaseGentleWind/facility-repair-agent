@@ -96,10 +96,12 @@ async def generate_reply_stream(
 async def generate_confirmation_stream(
     draft: TicketDraft,
     history: list[dict],
+    visit_time: str,
 ) -> AsyncIterator[str]:
     """流式生成工单确认摘要，yield 文字片段。"""
     system = confirmation_system_prompt(
-        json.dumps(draft.to_dict(), ensure_ascii=False)
+        json.dumps(draft.to_dict(), ensure_ascii=False),
+        visit_time,
     )
     messages = [{"role": "system", "content": system}, *history]
     stream = await _client.chat.completions.create(

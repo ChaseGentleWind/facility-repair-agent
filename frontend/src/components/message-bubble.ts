@@ -63,6 +63,11 @@ export class MessageBubble extends LitElement {
         border-radius: 8px;
         cursor: pointer;
         display: block;
+        margin-bottom: 6px;
+      }
+
+      .bubble img:only-child {
+        margin-bottom: 0;
       }
 
       .cursor {
@@ -92,9 +97,12 @@ export class MessageBubble extends LitElement {
     return html`
       <div class="avatar ${this.role}">${avatarLabel}</div>
       <div class="bubble">
-        ${this.msg.type === 'image' && this.msg.imageUrl
-          ? html`<img src=${this.msg.imageUrl} alt="上传图片" @click=${this._previewImage} />`
-          : html`${this.msg.content}${this.streaming ? html`<span class="cursor"></span>` : null}`}
+        ${this.msg.imageUrl
+          ? html`<img src=${this.msg.imageUrl} alt="报修图片" @click=${this._previewImage} />`
+          : null}
+        ${this.msg.type !== 'image' || this.msg.content
+          ? html`${this.msg.content}${this.streaming ? html`<span class="cursor"></span>` : null}`
+          : null}
       </div>
     `
   }

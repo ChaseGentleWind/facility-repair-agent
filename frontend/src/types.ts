@@ -25,6 +25,7 @@ export interface ChatMessage {
 export type AgentState =
   | 'GREETING'
   | 'COLLECTING'
+  | 'WAITING_IMAGE'
   | 'CONFIRMING'
   | 'COMPLETED'
   | 'ESCALATED'

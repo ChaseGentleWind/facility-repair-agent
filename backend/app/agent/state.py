@@ -11,6 +11,7 @@ from app.config import settings
 class AgentState(str, Enum):
     GREETING = "GREETING"
     COLLECTING = "COLLECTING"
+    WAITING_IMAGE = "WAITING_IMAGE"
     CONFIRMING = "CONFIRMING"
     COMPLETED = "COMPLETED"
     ESCALATED = "ESCALATED"
@@ -19,8 +20,10 @@ class AgentState(str, Enum):
 @dataclass
 class TicketDraft:
     description: str | None = None
+    estate: str | None = None
     building: str | None = None
     floor: str | None = None
+    unit: str | None = None
     room: str | None = None
     image_urls: list[str] = field(default_factory=list)
     # RAG 填充字段
@@ -29,13 +32,13 @@ class TicketDraft:
     fault_type_name: str | None = None
     repair_priority_rag: str | None = None
     repair_type: str | None = None
-    confidence: str | None = None
-    rag_match_score: float | None = None
 
     def missing_required(self) -> list[str]:
         missing = []
         if not self.description:
             missing.append("description")
+        if not self.estate:
+            missing.append("estate")
         if not self.building:
             missing.append("building")
         if not self.floor:
@@ -45,8 +48,10 @@ class TicketDraft:
     def to_dict(self) -> dict:
         d = {
             "description": self.description,
+            "estate": self.estate,
             "building": self.building,
             "floor": self.floor,
+            "unit": self.unit,
             "room": self.room,
             "image_urls": self.image_urls,
         }

@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     minio_secure: bool = False
     minio_public_base: str = ""
 
+    use_local_storage: bool = True
+    local_upload_dir: str = str(_BASE_DIR / "data" / "uploads")
+
     session_ttl_seconds: int = 1800
     max_retry_count: int = 3
 

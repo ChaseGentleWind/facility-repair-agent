@@ -45,7 +45,9 @@ export async function uploadImage(
 ): Promise<UploadResponse> {
   const form = new FormData()
   form.append('session_id', sessionId)
-  form.append('file', file, filename)
+  const typed = file instanceof File ? file : new File([file], filename, { type: file.type || 'image/jpeg' })
+  console.log('[upload] blob.type=', file.type, 'typed.type=', typed.type, 'filename=', filename)
+  form.append('file', typed, filename)
   const resp = await fetch(url('/api/v1/upload/image'), {
     method: 'POST',
     body: form,

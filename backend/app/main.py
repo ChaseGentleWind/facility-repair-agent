@@ -1,7 +1,9 @@
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import api_router
 from app.config import settings
@@ -25,6 +27,11 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router)
+
+    if settings.use_local_storage:
+        upload_dir = Path(settings.local_upload_dir)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        app.mount("/uploads", StaticFiles(directory=str(upload_dir)), name="uploads")
 
     @app.get("/health")
     async def health():

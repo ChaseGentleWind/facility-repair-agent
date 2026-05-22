@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import logging
+from datetime import datetime
 from typing import AsyncIterator
 
 from app.agent.state import AgentState, Session, TicketDraft
@@ -12,16 +12,14 @@ from app.services import rag
 
 logger = logging.getLogger(__name__)
 
+_SKIP_KEYWORDS = {"跳过", "不用", "没有", "算了", "不需要", "skip"}
+
 
 async def process_message(
     session: Session,
     user_message: str,
     image_url: str | None = None,
 ) -> AsyncIterator[dict]:
-    """
-    主入口：接受用户消息，yield SSE 事件 dict。
-    调用方负责将 dict 序列化为 SSE 格式写入响应流。
-    """
     session.history.append({"role": "user", "content": user_message})
 
     if session.state == AgentState.GREETING:
@@ -30,6 +28,9 @@ async def process_message(
     try:
         if session.state == AgentState.COLLECTING:
             async for event in _handle_collecting(session, user_message, image_url):
+                yield event
+        elif session.state == AgentState.WAITING_IMAGE:
+            async for event in _handle_waiting_image(session, user_message, image_url):
                 yield event
         elif session.state == AgentState.CONFIRMING:
             async for event in _handle_confirming(session, user_message):
@@ -52,11 +53,9 @@ async def _handle_collecting(
     user_message: str,
     image_url: str | None,
 ) -> AsyncIterator[dict]:
-    # Step 1: 提取字段（非流式，JSON）
     extraction = await llm.extract_fields(session.draft, user_message, image_url)
     _apply_extraction(session.draft, extraction, image_url)
 
-    # 用户要求转人工
     if extraction.get("needs_human"):
         session.state = AgentState.ESCALATED
         yield {
@@ -68,30 +67,24 @@ async def _handle_collecting(
 
     missing = session.draft.missing_required()
 
-    # Step 2: 生成回复（流式）
     if not missing:
-        # 必填项齐全 → RAG 检索 fault_type + priority
-        rag_result = await rag.search_fault(session.draft.description)
-        if rag_result:
-            session.draft.normalized_description = rag_result.normalized_description
-            session.draft.fault_type_code = rag_result.fault_type_code
-            session.draft.fault_type_name = rag_result.fault_type_name
-            session.draft.repair_priority_rag = rag_result.repair_priority
-            session.draft.repair_type = rag_result.repair_type
-            session.draft.confidence = rag_result.confidence
-            session.draft.rag_match_score = rag_result.match_score
-
-        # 生成确认摘要，切换到 CONFIRMING
-        session.state = AgentState.CONFIRMING
-        reply_text = ""
-        async for chunk in llm.generate_confirmation_stream(session.draft, session.history):
-            reply_text += chunk
-            yield {"type": "text_delta", "content": chunk}
+        if not session.draft.image_urls:
+            # 必填项齐全但无图片 → 追问图片
+            session.state = AgentState.WAITING_IMAGE
+            prompt = '请问您能提供一张现场照片吗？（可跳过，直接回复"跳过"）'
+            session.history.append({"role": "assistant", "content": prompt})
+            yield {"type": "text_delta", "content": prompt}
+            yield {
+                "type": "state_update",
+                "state": session.state.value,
+                "collected": session.draft.to_dict(),
+            }
+        else:
+            async for event in _run_rag_and_confirm(session):
+                yield event
     else:
-        # 还有缺失项 → 生成追问
         session.retry_count += 1
         if session.retry_count >= settings.max_retry_count and not session.draft.description:
-            # 多次未能获取任何有效信息，主动降级转人工
             session.state = AgentState.ESCALATED
             yield {
                 "type": "human_service",
@@ -105,7 +98,61 @@ async def _handle_collecting(
         async for chunk in llm.generate_reply_stream(session.draft, session.history, missing):
             reply_text += chunk
             yield {"type": "text_delta", "content": chunk}
+        session.history.append({"role": "assistant", "content": reply_text})
+        yield {
+            "type": "state_update",
+            "state": session.state.value,
+            "collected": session.draft.to_dict(),
+        }
 
+
+# ── WAITING_IMAGE 阶段 ───────────────────────────────────────────────────────
+
+async def _handle_waiting_image(
+    session: Session,
+    user_message: str,
+    image_url: str | None,
+) -> AsyncIterator[dict]:
+    skipped = any(kw in user_message for kw in _SKIP_KEYWORDS)
+
+    if image_url:
+        _apply_extraction(session.draft, {}, image_url)
+    elif not skipped:
+        # 用户既没上传图片也没跳过，继续等待
+        prompt = '您可以拍一张现场照片发给我，或者回复"跳过"直接提交报修。'
+        session.history.append({"role": "assistant", "content": prompt})
+        yield {"type": "text_delta", "content": prompt}
+        yield {
+            "type": "state_update",
+            "state": session.state.value,
+            "collected": session.draft.to_dict(),
+        }
+        return
+
+    # 收到图片或用户跳过 → 进入 RAG + 确认
+    async for event in _run_rag_and_confirm(session):
+        yield event
+
+
+# ── RAG 检索 + 生成确认摘要 ──────────────────────────────────────────────────
+
+async def _run_rag_and_confirm(session: Session) -> AsyncIterator[dict]:
+    rag_result = await rag.search_fault(session.draft.description)
+    if rag_result:
+        session.draft.normalized_description = rag_result.normalized_description
+        session.draft.fault_type_code = rag_result.fault_type_code
+        session.draft.fault_type_name = rag_result.fault_type_name
+        session.draft.repair_priority_rag = rag_result.repair_priority
+        session.draft.repair_type = rag_result.repair_type
+
+    now = datetime.now()
+    visit_time = f"{now.month}月{now.day}日 {now.hour}时"
+
+    session.state = AgentState.CONFIRMING
+    reply_text = ""
+    async for chunk in llm.generate_confirmation_stream(session.draft, session.history, visit_time):
+        reply_text += chunk
+        yield {"type": "text_delta", "content": chunk}
     session.history.append({"role": "assistant", "content": reply_text})
     yield {
         "type": "state_update",
@@ -125,9 +172,10 @@ async def _handle_confirming(
     if confirmed:
         ticket = build_ticket(session)
         session.state = AgentState.COMPLETED
+        logger.info("ticket_ready: session=%s ticket_id=%s", session.session_id, ticket.get("ticket_id"))
         yield {"type": "ticket_ready", "ticket": ticket}
+        yield {"type": "text_delta", "content": "好的，您的报修单已提交！我们会尽快安排人员上门处理。"}
     else:
-        # 用户要修改，回到 COLLECTING
         session.state = AgentState.COLLECTING
         extraction = await llm.extract_fields(session.draft, user_message)
         _apply_extraction(session.draft, extraction, None)
@@ -150,10 +198,14 @@ async def _handle_confirming(
 def _apply_extraction(draft: TicketDraft, extraction: dict, image_url: str | None) -> None:
     if extraction.get("description"):
         draft.description = extraction["description"]
+    if extraction.get("estate"):
+        draft.estate = extraction["estate"]
     if extraction.get("building"):
         draft.building = extraction["building"]
     if extraction.get("floor"):
         draft.floor = extraction["floor"]
+    if extraction.get("unit"):
+        draft.unit = extraction["unit"]
     if extraction.get("room"):
         draft.room = extraction["room"]
     if image_url and image_url not in draft.image_urls:

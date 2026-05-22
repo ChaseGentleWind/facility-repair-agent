@@ -78,13 +78,14 @@ export class ChatPanel extends LitElement {
 
       message-list {
         flex: 1;
+        min-height: 0;
         overflow-y: auto;
       }
 
       @media (max-width: 480px) {
         :host([open]) {
           width: 100vw;
-          height: 100vh;
+          height: 100dvh;
           max-height: none;
           bottom: 0;
           right: 0;
@@ -102,6 +103,7 @@ export class ChatPanel extends LitElement {
   private _stateLabels: Record<string, string> = {
     GREETING: '等待您的描述',
     COLLECTING: '正在收集报修信息...',
+    WAITING_IMAGE: '等待上传现场照片',
     CONFIRMING: '请确认报修信息',
     COMPLETED: '工单已生成',
     ESCALATED: '已转接人工服务',
@@ -143,7 +145,7 @@ export class ChatPanel extends LitElement {
     this.store.sendText(e.detail)
   }
 
-  private _onSendImage(e: CustomEvent<File>) {
-    this.store.sendImage(e.detail)
+  private _onSendImage(e: CustomEvent<{ file: File; text: string | null }>) {
+    this.store.sendImage(e.detail.file, e.detail.text ?? undefined)
   }
 }

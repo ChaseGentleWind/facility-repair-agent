@@ -5,8 +5,13 @@ export default defineConfig({
   root: '.',
   server: {
     port: 5173,
+    allowedHosts: ['powwow-uncharted-uniformed.ngrok-free.dev'],
     proxy: {
       '/api': {
+        target: 'http://localhost:8500',
+        changeOrigin: true,
+      },
+      '/uploads': {
         target: 'http://localhost:8500',
         changeOrigin: true,
       },
@@ -24,6 +29,7 @@ export default defineConfig({
         inlineDynamicImports: true,
       },
     },
+    
     outDir: 'dist',
   },
 })

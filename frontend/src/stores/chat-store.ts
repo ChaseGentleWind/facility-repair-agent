@@ -4,6 +4,7 @@ import { parseSSEStream } from '../services/sse-parser'
 import { compressImage } from '../services/image-compress'
 
 const SESSION_KEY = 'repair-agent-session'
+const DEFAULT_GREETING = '您好！我是设施报修小助手，请问您遇到了什么问题？（您可以直接描述故障，比如"A栋3楼空调不制冷"）'
 
 type Listener = () => void
 
@@ -45,6 +46,14 @@ export class ChatStore {
     const saved = sessionStorage.getItem(SESSION_KEY)
     if (saved) {
       this.sessionId = saved
+      if (this.messages.length === 0) {
+        this.messages.push({
+          role: 'bot',
+          type: 'text',
+          content: DEFAULT_GREETING,
+          timestamp: Date.now(),
+        })
+      }
       this._notify()
       return
     }
@@ -90,25 +99,46 @@ export class ChatStore {
     await this._streamAgentReply('text', text)
   }
 
-  async sendImage(file: File) {
+  async sendImage(file: File, text?: string, _retried = false) {
     if (!this.sessionId || this.isStreaming) return
 
     const localUrl = URL.createObjectURL(file)
-    this.messages.push({
-      role: 'user',
-      type: 'image',
-      content: '',
-      imageUrl: localUrl,
-      timestamp: Date.now(),
-    })
-    this._notify()
+    if (!_retried) {
+      this.messages.push({
+        role: 'user',
+        type: 'image',
+        content: text || '',
+        imageUrl: localUrl,
+        timestamp: Date.now(),
+      })
+      this._notify()
+    }
 
     try {
       const compressed = await compressImage(file)
       const resp = await uploadImage(this.sessionId, compressed, 'photo.jpg')
-      await this._streamAgentReply('image_url', '图片已上传', resp.image_url)
-    } catch (e) {
+      await this._streamAgentReply('image_url', text || '图片已上传', resp.image_url, false, resp.image_url)
+    } catch (e: any) {
       console.error('[repair-agent] image upload failed:', e)
+      if ((e?.message?.includes('400') || e?.message?.includes('404')) && !_retried) {
+        sessionStorage.removeItem(SESSION_KEY)
+        this.sessionId = null
+        try {
+          const resp = await chatInit(this._config.clientId)
+          this.sessionId = resp.session_id
+          sessionStorage.setItem(SESSION_KEY, resp.session_id)
+          await this.sendImage(file, text, true)
+        } catch {
+          this.messages.push({
+            role: 'bot',
+            type: 'text',
+            content: '连接失败，请刷新页面重试。',
+            timestamp: Date.now(),
+          })
+          this._notify()
+        }
+        return
+      }
       this.messages.push({
         role: 'bot',
         type: 'text',
@@ -123,12 +153,15 @@ export class ChatStore {
     type: 'text' | 'image_url',
     content: string,
     imageUrl?: string,
+    _retried = false,
+    botImageUrl?: string,
   ) {
     this.isStreaming = true
     const botMsg: ChatMessage = {
       role: 'bot',
       type: 'text',
       content: '',
+      imageUrl: botImageUrl,
       timestamp: Date.now(),
     }
     this.messages.push(botMsg)
@@ -139,15 +172,33 @@ export class ChatStore {
       await parseSSEStream(reader, (evt) => this._handleSSE(evt, botMsg))
     } catch (e: any) {
       console.error('[repair-agent] stream error:', e)
-      if (e?.message?.includes('404')) {
+      if (e?.message?.includes('404') && !_retried) {
+        const idx = this.messages.indexOf(botMsg)
+        if (idx >= 0) this.messages.splice(idx, 1)
         sessionStorage.removeItem(SESSION_KEY)
-        botMsg.content = '会话已过期，正在重新连接...'
-        this._notify()
+        this.sessionId = null
         this.isStreaming = false
-        await this.init(this._config)
+        try {
+          const resp = await chatInit(this._config.clientId)
+          this.sessionId = resp.session_id
+          sessionStorage.setItem(SESSION_KEY, resp.session_id)
+          await this._streamAgentReply(type, content, imageUrl, true, botImageUrl)
+        } catch {
+          this.messages.push({
+            role: 'bot',
+            type: 'text',
+            content: '连接失败，请刷新页面重试。',
+            timestamp: Date.now(),
+          })
+          this._notify()
+        }
         return
       }
       botMsg.content = '抱歉，系统暂时繁忙，请稍后重试。'
+    }
+
+    if (!botMsg.content.trim()) {
+      botMsg.content = '抱歉，响应异常，请重试。'
     }
 
     this.isStreaming = false
@@ -170,6 +221,7 @@ export class ChatStore {
 
       case 'ticket_ready':
         if (evt.ticket) {
+          console.log('[repair-agent] ticket_ready received, dispatching event', evt.ticket)
           this._dispatchEvent('onRepairTicketGenerated', evt.ticket)
         }
         this.agentState = 'COMPLETED'
