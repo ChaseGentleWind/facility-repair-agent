@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import AsyncIterator
 
 from app.agent.state import AgentState, Session, TicketDraft
@@ -56,12 +56,33 @@ async def _handle_collecting(
     extraction = await llm.extract_fields(session.draft, user_message, image_url)
     _apply_extraction(session.draft, extraction, image_url)
 
+    # 若本轮提取到 visit_time_text 且 draft 中尚未解析，立即解析为绝对时间
+    visit_time_text = extraction.get("visit_time_text")
+    # 兜底：LLM 未提取但消息本身就是已知紧急时间词（如"越快越好"、"尽快"）
+    if not visit_time_text and not session.draft.visit_time:
+        from app.services.llm import _DEFAULT_KEYWORD
+        if any(kw in user_message for kw in _DEFAULT_KEYWORD):
+            visit_time_text = user_message.strip()
+    if visit_time_text:
+        session.draft.visit_time = await llm.resolve_visit_time(visit_time_text, datetime.now())
+
     if extraction.get("needs_human"):
         session.state = AgentState.ESCALATED
         yield {
             "type": "human_service",
             "session_id": session.session_id,
             "partial_ticket": session.draft.to_dict(),
+        }
+        return
+
+    clarification = extraction.get("clarification_question")
+    if clarification:
+        session.history.append({"role": "assistant", "content": clarification})
+        yield {"type": "text_delta", "content": clarification}
+        yield {
+            "type": "state_update",
+            "state": session.state.value,
+            "collected": session.draft.to_dict(),
         }
         return
 
@@ -145,8 +166,13 @@ async def _run_rag_and_confirm(session: Session) -> AsyncIterator[dict]:
         session.draft.repair_priority_rag = rag_result.repair_priority
         session.draft.repair_type = rag_result.repair_type
 
-    now = datetime.now()
-    visit_time = f"{now.month}月{now.day}日 {now.hour}时"
+    # 若全程未提及上门时间，使用默认值 now+30min
+    if not session.draft.visit_time:
+        now = datetime.now()
+        default = now + timedelta(minutes=30)
+        session.draft.visit_time = f"{default.month}月{default.day}日 {default.hour}时{default.minute:02d}分"
+
+    visit_time = session.draft.visit_time
 
     session.state = AgentState.CONFIRMING
     reply_text = ""
@@ -179,18 +205,25 @@ async def _handle_confirming(
         session.state = AgentState.COLLECTING
         extraction = await llm.extract_fields(session.draft, user_message)
         _apply_extraction(session.draft, extraction, None)
+        visit_time_text = extraction.get("visit_time_text")
+        if visit_time_text:
+            session.draft.visit_time = await llm.resolve_visit_time(visit_time_text, datetime.now())
 
         missing = session.draft.missing_required()
-        reply_text = ""
-        async for chunk in llm.generate_reply_stream(session.draft, session.history, missing):
-            reply_text += chunk
-            yield {"type": "text_delta", "content": chunk}
-        session.history.append({"role": "assistant", "content": reply_text})
-        yield {
-            "type": "state_update",
-            "state": session.state.value,
-            "collected": session.draft.to_dict(),
-        }
+        if not missing:
+            async for event in _run_rag_and_confirm(session):
+                yield event
+        else:
+            reply_text = ""
+            async for chunk in llm.generate_reply_stream(session.draft, session.history, missing):
+                reply_text += chunk
+                yield {"type": "text_delta", "content": chunk}
+            session.history.append({"role": "assistant", "content": reply_text})
+            yield {
+                "type": "state_update",
+                "state": session.state.value,
+                "collected": session.draft.to_dict(),
+            }
 
 
 # ── 工具函数 ─────────────────────────────────────────────────────────────────

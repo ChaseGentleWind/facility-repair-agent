@@ -10,7 +10,8 @@ export class MessageBubble extends LitElement {
     css`
       :host {
         display: flex;
-        margin: 8px 16px;
+        margin: 10px 16px;
+        align-items: flex-start;
       }
       :host([role='user']) {
         justify-content: flex-end;
@@ -39,12 +40,13 @@ export class MessageBubble extends LitElement {
 
       .bubble {
         max-width: 75%;
-        padding: 10px 14px;
+        padding: 8px 12px;
         border-radius: 12px;
         word-break: break-word;
         white-space: pre-wrap;
-        line-height: 1.6;
+        line-height: 1.5;
         font-size: 14px;
+        min-width: 60px;
       }
       :host([role='bot']) .bubble {
         background: var(--ra-bg-secondary);
@@ -93,17 +95,17 @@ export class MessageBubble extends LitElement {
   render() {
     const isUser = this.role === 'user'
     const avatarLabel = isUser ? 'U' : 'A'
+    const content = (this.msg.content ?? '')
+      .trim()
+      .replace(/\n{2,}/g, '\n')
 
     return html`
       <div class="avatar ${this.role}">${avatarLabel}</div>
-      <div class="bubble">
-        ${this.msg.imageUrl
+      <div class="bubble">${this.msg.imageUrl
           ? html`<img src=${this.msg.imageUrl} alt="报修图片" @click=${this._previewImage} />`
-          : null}
-        ${this.msg.type !== 'image' || this.msg.content
-          ? html`${this.msg.content}${this.streaming ? html`<span class="cursor"></span>` : null}`
-          : null}
-      </div>
+          : null}${this.msg.type !== 'image' || this.msg.content
+          ? html`${content}${this.streaming ? html`<span class="cursor"></span>` : null}`
+          : null}</div>
     `
   }
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import random
-from datetime import datetime
 
 from app.agent.state import Session
 
@@ -17,13 +16,9 @@ def build_ticket(session: Session) -> dict:
     repair_no = _repair_no_counter
     _repair_no_counter += 1
 
-    now = datetime.now()
-    visit_time = f"{now.month}月{now.day}日 {now.hour}时"
-
     ft_code = draft.fault_type_code or "000"
     ft_name = draft.fault_type_name or "待分类"
     priority = draft.repair_priority_rag or "MEDIUM"
-
     problem_description = draft.normalized_description or draft.description or ""
 
     return {
@@ -40,7 +35,7 @@ def build_ticket(session: Session) -> dict:
         "problem_description": problem_description,
         "image_urls": draft.image_urls,
         "reporter": {"name": None, "phone": None},
-        "visit_time": visit_time,
+        "visit_time": draft.visit_time,
         "repair_priority": priority,
         "fault_type": {
             "code": ft_code,

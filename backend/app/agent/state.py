@@ -25,6 +25,7 @@ class TicketDraft:
     floor: str | None = None
     unit: str | None = None
     room: str | None = None
+    visit_time: str | None = None        # 用户期望上门时间，格式：M月D日 H时mm分
     image_urls: list[str] = field(default_factory=list)
     # RAG 填充字段
     normalized_description: str | None = None
@@ -43,6 +44,8 @@ class TicketDraft:
             missing.append("building")
         if not self.floor:
             missing.append("floor")
+        if not self.visit_time:
+            missing.append("visit_time")
         return missing
 
     def to_dict(self) -> dict:
@@ -53,6 +56,7 @@ class TicketDraft:
             "floor": self.floor,
             "unit": self.unit,
             "room": self.room,
+            "visit_time": self.visit_time,
             "image_urls": self.image_urls,
         }
         if self.fault_type_name:

@@ -20,6 +20,7 @@ export class ChatStore {
   private _config!: WidgetConfig
   private _listeners = new Set<Listener>()
   private _hostElement: HTMLElement | null = null
+  private _lastUploadedImageUrl: string | null = null
 
   get config() {
     return this._config
@@ -117,7 +118,8 @@ export class ChatStore {
     try {
       const compressed = await compressImage(file)
       const resp = await uploadImage(this.sessionId, compressed, 'photo.jpg')
-      await this._streamAgentReply('image_url', text || '图片已上传', resp.image_url, false, resp.image_url)
+      this._lastUploadedImageUrl = resp.image_url
+      await this._streamAgentReply('image_url', text || '图片已上传', resp.image_url)
     } catch (e: any) {
       console.error('[repair-agent] image upload failed:', e)
       if ((e?.message?.includes('400') || e?.message?.includes('404')) && !_retried) {
@@ -154,14 +156,12 @@ export class ChatStore {
     content: string,
     imageUrl?: string,
     _retried = false,
-    botImageUrl?: string,
   ) {
     this.isStreaming = true
     const botMsg: ChatMessage = {
       role: 'bot',
       type: 'text',
       content: '',
-      imageUrl: botImageUrl,
       timestamp: Date.now(),
     }
     this.messages.push(botMsg)
@@ -182,7 +182,7 @@ export class ChatStore {
           const resp = await chatInit(this._config.clientId)
           this.sessionId = resp.session_id
           sessionStorage.setItem(SESSION_KEY, resp.session_id)
-          await this._streamAgentReply(type, content, imageUrl, true, botImageUrl)
+          await this._streamAgentReply(type, content, imageUrl, true)
         } catch {
           this.messages.push({
             role: 'bot',
@@ -214,7 +214,18 @@ export class ChatStore {
         break
 
       case 'state_update':
-        if (evt.state) this.agentState = evt.state
+        if (evt.state) {
+          this.agentState = evt.state
+          if (evt.state === 'CONFIRMING' && this._lastUploadedImageUrl) {
+            // 必须替换对象引用，Lit 才能检测到 .msg 变化并重新渲染 bubble
+            const idx = this.messages.indexOf(botMsg)
+            if (idx >= 0) {
+              const updated = { ...botMsg, imageUrl: this._lastUploadedImageUrl }
+              this.messages[idx] = updated
+              Object.assign(botMsg, updated)
+            }
+          }
+        }
         if (evt.collected) Object.assign(this.collectedFields, evt.collected)
         this._notify()
         break
@@ -235,6 +246,9 @@ export class ChatStore {
           partial_ticket: evt.partial_ticket,
         })
         this.agentState = 'ESCALATED'
+        if (!botMsg.content.trim()) {
+          botMsg.content = '好的，正在为您转接人工客服，请稍候。'
+        }
         this._notify()
         break
 
@@ -262,6 +276,7 @@ export class ChatStore {
     this.collectedFields = {}
     this.isStreaming = false
     this.unreadCount = 0
+    this._lastUploadedImageUrl = null
     this._notify()
     this.init(this._config)
   }
