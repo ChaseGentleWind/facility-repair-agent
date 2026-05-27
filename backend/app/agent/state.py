@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ class AgentState(str, Enum):
     COLLECTING = "COLLECTING"
     WAITING_IMAGE = "WAITING_IMAGE"
     CONFIRMING = "CONFIRMING"
+    EDITING = "EDITING"       # ticket_ready 后用户要求修改字段
     COMPLETED = "COMPLETED"
     ESCALATED = "ESCALATED"
 
@@ -70,13 +72,15 @@ class TicketDraft:
 class Session:
     session_id: str
     client_id: str
-    source: str
     state: AgentState
     history: list[dict]  # [{"role": "user"|"assistant", "content": "..."}]
     draft: TicketDraft
     created_at: datetime
     expires_at: datetime
     retry_count: int = 0
+    image_description: str | None = None  # AI 对用户上传图片的故障描述
+    user_confirmed_description_priority: bool = False  # 用户是否已确认"以描述为准"（跳过图文一致性检测）
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)  # 并发控制锁
 
 
 # ── 内存会话存储 ──────────────────────────────────────────────────────────────
@@ -84,12 +88,11 @@ class Session:
 _store: dict[str, Session] = {}
 
 
-def create_session(client_id: str, source: str) -> Session:
+def create_session(client_id: str) -> Session:
     now = datetime.now()
     session = Session(
         session_id=f"sess_{uuid.uuid4().hex[:12]}",
         client_id=client_id,
-        source=source,
         state=AgentState.GREETING,
         history=[],
         draft=TicketDraft(),
@@ -105,7 +108,7 @@ def get_session(session_id: str) -> Session | None:
     if session is None:
         return None
     if session.expires_at < datetime.now():
-        del _store[session_id]
+        _store.pop(session_id, None)  # 使用 pop 避免并发删除时的 KeyError
         return None
     return session
 

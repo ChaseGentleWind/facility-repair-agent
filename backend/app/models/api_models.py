@@ -1,9 +1,8 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class InitRequest(BaseModel):
     client_id: str
-    metadata: dict = Field(default_factory=dict)
 
 
 class InitResponse(BaseModel):

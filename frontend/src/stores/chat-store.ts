@@ -253,7 +253,12 @@ export class ChatStore {
         break
 
       case 'error':
-        botMsg.content += `\n[错误] ${evt.message ?? '未知错误'}`
+        // 处理 BUSY 错误：后端正在处理中，提示用户稍后再试
+        if (evt.code === 'BUSY') {
+          botMsg.content = '正在处理您的上一条消息，请稍后再试。'
+        } else {
+          botMsg.content += `\n[错误] ${evt.message ?? '未知错误'}`
+        }
         this._notify()
         break
 

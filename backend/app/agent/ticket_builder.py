@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import random
+import threading
 
 from app.agent.state import Session
 
 # 模块级维修单号计数器，重启后重置
 _repair_no_counter = 1726198
+_counter_lock = threading.Lock()  # 保护计数器的线程锁
 
 
 def build_ticket(session: Session) -> dict:
     global _repair_no_counter
 
+    # 使用线程锁保护计数器，避免并发时重复
+    with _counter_lock:
+        repair_no = _repair_no_counter
+        _repair_no_counter += 1
+
     draft = session.draft
     ticket_id = str(random.randint(10**16, 10**17 - 1))
-    repair_no = _repair_no_counter
-    _repair_no_counter += 1
 
     ft_code = draft.fault_type_code or "000"
     ft_name = draft.fault_type_name or "待分类"

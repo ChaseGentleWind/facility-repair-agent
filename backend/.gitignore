@@ -6,3 +6,4 @@ dist/
 .venv/
 data/chromadb/
 data/cleaned/
+data/uploads/

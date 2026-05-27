@@ -3,7 +3,6 @@ export interface WidgetConfig {
   clientId: string
   position: 'bottom-right' | 'bottom-left'
   themeColor: string
-  lang: string
 }
 
 export const DEFAULT_CONFIG: WidgetConfig = {
@@ -11,7 +10,6 @@ export const DEFAULT_CONFIG: WidgetConfig = {
   clientId: 'default',
   position: 'bottom-right',
   themeColor: '#1677ff',
-  lang: 'zh-CN',
 }
 
 export interface ChatMessage {

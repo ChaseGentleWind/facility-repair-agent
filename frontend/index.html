@@ -63,13 +63,34 @@
     .field-value:hover { background: #f5f5f5; }
     .field-value:focus { background: #e6f4ff; }
     .images-wrap { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
-    .images-wrap img {
+    .img-item {
+      position: relative;
+      width: 80px;
+      height: 80px;
+    }
+    .img-item img {
       width: 80px; height: 80px;
       object-fit: cover;
       border-radius: 6px;
       border: 1px solid #e8e8e8;
       cursor: pointer;
+      display: block;
     }
+    .img-delete {
+      position: absolute;
+      top: -6px; right: -6px;
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.55);
+      color: #fff;
+      font-size: 13px;
+      line-height: 18px;
+      text-align: center;
+      cursor: pointer;
+      display: none;
+      user-select: none;
+    }
+    .img-item:hover .img-delete { display: block; }
     .no-image { font-size: 13px; color: #bbb; }
     .btn-submit {
       margin-top: 20px;
@@ -185,12 +206,34 @@
         wrap.innerHTML = '<span class="no-image">暂无图片</span>'
       } else {
         urls.forEach(function(url) {
-          const img = document.createElement('img')
-          img.src = url
-          img.alt = '报修图片'
-          img.addEventListener('click', function() { openLightbox(url) })
-          wrap.appendChild(img)
+          wrap.appendChild(createImgItem(url))
         })
+      }
+
+      function createImgItem(url) {
+        const item = document.createElement('div')
+        item.className = 'img-item'
+
+        const img = document.createElement('img')
+        img.src = url
+        img.alt = '报修图片'
+        img.addEventListener('click', function() { openLightbox(url) })
+
+        const del = document.createElement('span')
+        del.className = 'img-delete'
+        del.textContent = '×'
+        del.title = '删除图片'
+        del.addEventListener('click', function(e) {
+          e.stopPropagation()
+          item.remove()
+          if (wrap.querySelectorAll('.img-item').length === 0) {
+            wrap.innerHTML = '<span class="no-image">暂无图片</span>'
+          }
+        })
+
+        item.appendChild(img)
+        item.appendChild(del)
+        return item
       }
 
       const ft = ticket.fault_type || {}
