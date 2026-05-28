@@ -14,8 +14,9 @@ class AgentState(str, Enum):
     COLLECTING = "COLLECTING"
     WAITING_IMAGE = "WAITING_IMAGE"
     CONFIRMING = "CONFIRMING"
-    EDITING = "EDITING"       # ticket_ready 后用户要求修改字段
-    COMPLETED = "COMPLETED"
+    PREVIEW_READY = "PREVIEW_READY"  # 工单预览已生成，等待用户提交或修改
+    SUBMITTED = "SUBMITTED"          # 工单已提交到后端系统
+    COMPLETED = "COMPLETED"          # 维修工单已完成（由外部系统回调更新）
     ESCALATED = "ESCALATED"
 
 
@@ -77,9 +78,11 @@ class Session:
     draft: TicketDraft
     created_at: datetime
     expires_at: datetime
-    retry_count: int = 0
+    stall_count: int = 0  # 连续多轮缺失字段集合未变化的次数
+    last_missing: list[str] = field(default_factory=list)  # 上一轮缺失字段列表
     image_description: str | None = None  # AI 对用户上传图片的故障描述
     user_confirmed_description_priority: bool = False  # 用户是否已确认"以描述为准"（跳过图文一致性检测）
+    ticket: dict | None = None  # 生成的工单快照，提交时直接使用
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)  # 并发控制锁
 
 

@@ -36,13 +36,15 @@ async def process_message(
         elif session.state == AgentState.CONFIRMING:
             async for event in _handle_confirming(session, user_message, image_url):
                 yield event
-        elif session.state == AgentState.EDITING:
-            async for event in _handle_editing(session, user_message, image_url):
+        elif session.state == AgentState.PREVIEW_READY:
+            async for event in _handle_preview_ready(session, user_message, image_url):
                 yield event
         elif session.state == AgentState.ESCALATED:
             yield {"type": "text_delta", "content": "已为您转接人工客服，如有其他问题请刷新页面重新发起。"}
         elif session.state == AgentState.COMPLETED:
             yield {"type": "text_delta", "content": "报修单已提交，如有其他问题请刷新页面重新发起。"}
+        elif session.state == AgentState.SUBMITTED:
+            yield {"type": "text_delta", "content": "工单已提交，如有其他问题请刷新页面重新发起。"}
         else:
             yield {"type": "error", "code": "INVALID_STATE", "message": "无效的会话状态"}
     except Exception as exc:
@@ -62,17 +64,19 @@ async def _handle_collecting(
     # 提取字段（有图片时会同时生成 image_description_text）
     extraction = await llm.extract_fields(session.draft, user_message, image_url)
 
+    if extraction.get("_error"):
+        msg = "系统繁忙，请稍后再试一次。"
+        session.history.append({"role": "assistant", "content": msg})
+        yield {"type": "text_delta", "content": msg}
+        yield {"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()}
+        return
+
     # 如果有图片描述，先展示给用户
     image_description = extraction.get("image_description_text")
     if image_description:
         session.image_description = image_description
         session.history.append({"role": "assistant", "content": image_description})
         yield {"type": "text_delta", "content": image_description}
-
-        # 追加确认问句
-        confirm_prompt = "\n\n这是您要报修的问题吗？"
-        session.history.append({"role": "assistant", "content": confirm_prompt})
-        yield {"type": "text_delta", "content": confirm_prompt}
 
     # COLLECTING 阶段：新图片替换旧图，避免累积
     if image_url:
@@ -139,14 +143,20 @@ async def _handle_collecting(
             async for event in _run_rag_and_confirm(session):
                 yield event
     else:
-        session.retry_count += 1
-        if session.retry_count >= settings.max_retry_count and not session.draft.description:
+        # 检测是否卡住：连续多轮缺失字段集合没有减少
+        if set(missing) == set(session.last_missing):
+            session.stall_count += 1
+        else:
+            session.stall_count = 0
+            session.last_missing = missing
+
+        if session.stall_count >= settings.max_stall_count:
             session.state = AgentState.ESCALATED
             yield {
                 "type": "human_service",
                 "session_id": session.session_id,
                 "partial_ticket": session.draft.to_dict(),
-                "reason": "max_retries",
+                "reason": f"stalled_on_fields:{','.join(missing)}",
             }
             return
 
@@ -174,6 +184,13 @@ async def _handle_waiting_image(
     if image_url:
         # 提取字段（会同时生成 image_description_text）
         extraction = await llm.extract_fields(session.draft, user_message, image_url)
+
+        if extraction.get("_error"):
+            msg = "系统繁忙，请重新发送图片试试。"
+            session.history.append({"role": "assistant", "content": msg})
+            yield {"type": "text_delta", "content": msg}
+            yield {"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()}
+            return
 
         # 如果有图片描述，先展示给用户
         image_description = extraction.get("image_description_text")
@@ -218,17 +235,11 @@ async def _run_rag_and_confirm(session: Session) -> AsyncIterator[dict]:
         session.draft.repair_priority_rag = rag_result.repair_priority
         session.draft.repair_type = rag_result.repair_type
 
-    # 若全程未提及上门时间，使用默认值 now+30min
-    if not session.draft.visit_time:
-        now = datetime.now()
-        default = now + timedelta(minutes=30)
-        session.draft.visit_time = f"{default.month}月{default.day}日 {default.hour}时{default.minute:02d}分"
-
     visit_time = session.draft.visit_time
 
     session.state = AgentState.CONFIRMING
     reply_text = ""
-    async for chunk in llm.generate_confirmation_stream(session.draft, session.history, visit_time):
+    async for chunk in llm.generate_confirmation_stream(session.draft, visit_time):
         reply_text += chunk
         yield {"type": "text_delta", "content": chunk}
     session.history.append({"role": "assistant", "content": reply_text})
@@ -250,43 +261,79 @@ async def _handle_confirming(
 
     if confirmed:
         ticket = build_ticket(session)
-        session.state = AgentState.EDITING
+        session.ticket = ticket
+        session.state = AgentState.PREVIEW_READY
         logger.info("ticket_ready: session=%s ticket_id=%s", session.session_id, ticket.get("ticket_id"))
         yield {"type": "ticket_ready", "ticket": ticket}
-        yield {"type": "text_delta", "content": "好的！报修单预览已生成，信息已同步至预览页面。如需修改，请直接告诉我。"}
+        yield {"type": "text_delta", "content": "好的！报修单预览已生成。请点击「提交工单」按钮完成提交，或告诉我需要修改的内容。"}
     else:
-        session.state = AgentState.COLLECTING
+        # 三分支否定逻辑：判断用户意图
+        intent = await llm.classify_denial_intent(user_message)
+        logger.info("[CONFIRMING] denial intent: %s, message: %s", intent, user_message)
 
-        # 提取字段（有图片时会同时生成 image_description_text）
-        extraction = await llm.extract_fields(session.draft, user_message, image_url)
+        if intent == "restart":
+            # 完全推翻，清空 draft，回到 COLLECTING
+            session.draft = TicketDraft()
+            session.state = AgentState.COLLECTING
+            session.stall_count = 0
+            session.last_missing = []
+            msg = "好的，我们重新开始。请描述您遇到的问题。"
+            session.history.append({"role": "assistant", "content": msg})
+            yield {"type": "text_delta", "content": msg}
+            yield {
+                "type": "state_update",
+                "state": session.state.value,
+                "collected": session.draft.to_dict(),
+            }
 
-        # 如果有图片描述，先展示给用户
-        image_description = extraction.get("image_description_text")
-        if image_description:
-            session.image_description = image_description
-            session.history.append({"role": "assistant", "content": image_description})
-            yield {"type": "text_delta", "content": image_description}
+        elif intent == "modify":
+            # 修改已有字段 → 用 editing 提取
+            session.state = AgentState.COLLECTING
+            extraction = await llm.extract_fields_editing(session.draft, user_message, image_url)
 
-        # CONFIRMING 阶段用户否认后重新收集：新图片替换旧图，避免累积
-        if image_url:
-            session.draft.image_urls = [image_url]
+            if extraction.get("_error"):
+                msg = "系统繁忙，请稍后再试一次。"
+                session.history.append({"role": "assistant", "content": msg})
+                yield {"type": "text_delta", "content": msg}
+                yield {"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()}
+                return
 
-        _infer_floor_from_room(extraction, session.draft)
-        _apply_extraction(session.draft, extraction, None)
-        visit_time_text = extraction.get("visit_time_text")
-        if visit_time_text:
-            session.draft.visit_time = await llm.resolve_visit_time(visit_time_text, datetime.now())
+            image_description = extraction.get("image_description_text")
+            if image_description:
+                session.image_description = image_description
+                session.history.append({"role": "assistant", "content": image_description})
+                yield {"type": "text_delta", "content": image_description}
 
-        missing = session.draft.missing_required()
-        if not missing:
-            async for event in _run_rag_and_confirm(session):
-                yield event
+            if image_url:
+                session.draft.image_urls = [image_url]
+
+            _infer_floor_from_room(extraction, session.draft)
+            _apply_extraction(session.draft, extraction, None)
+            visit_time_text = extraction.get("visit_time_text")
+            if visit_time_text:
+                session.draft.visit_time = await llm.resolve_visit_time(visit_time_text, datetime.now())
+
+            missing = session.draft.missing_required()
+            if not missing:
+                async for event in _run_rag_and_confirm(session):
+                    yield event
+            else:
+                reply_text = ""
+                async for chunk in llm.generate_reply_stream(session.draft, session.history, missing):
+                    reply_text += chunk
+                    yield {"type": "text_delta", "content": chunk}
+                session.history.append({"role": "assistant", "content": reply_text})
+                yield {
+                    "type": "state_update",
+                    "state": session.state.value,
+                    "collected": session.draft.to_dict(),
+                }
+
         else:
-            reply_text = ""
-            async for chunk in llm.generate_reply_stream(session.draft, session.history, missing):
-                reply_text += chunk
-                yield {"type": "text_delta", "content": chunk}
-            session.history.append({"role": "assistant", "content": reply_text})
+            # unclear：追问用户想修改什么
+            msg = "请问您需要修改哪一项？比如位置、时间或问题描述。"
+            session.history.append({"role": "assistant", "content": msg})
+            yield {"type": "text_delta", "content": msg}
             yield {
                 "type": "state_update",
                 "state": session.state.value,
@@ -294,16 +341,26 @@ async def _handle_confirming(
             }
 
 
-# ── EDITING 阶段（ticket_ready 后用户要求修改）────────────────────────────────
+# ── PREVIEW_READY 阶段（工单预览已生成，用户可修改或提交）──────────────────
 
-async def _handle_editing(
+async def _handle_preview_ready(
     session: Session,
     user_message: str,
     image_url: str | None,
 ) -> AsyncIterator[dict]:
+    """
+    PREVIEW_READY 阶段：用户可以修改字段或确认提交
+    """
     # 提取修改内容（有图片时会同时生成 image_description_text）
     extraction = await llm.extract_fields_editing(session.draft, user_message, image_url)
-    logger.info("[EDITING] LLM extraction result: %s", extraction)
+    logger.info("[PREVIEW_READY] LLM extraction result: %s", extraction)
+
+    if extraction.get("_error"):
+        msg = "系统繁忙，请稍后再试一次。"
+        session.history.append({"role": "assistant", "content": msg})
+        yield {"type": "text_delta", "content": msg}
+        yield {"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()}
+        return
 
     # 如果有图片描述，先展示给用户
     image_description = extraction.get("image_description_text")
@@ -323,17 +380,16 @@ async def _handle_editing(
     room_changed = new_room is not None and new_room != session.draft.room
     new_floor = extraction.get("floor")
     floor_changed = new_floor is not None and new_floor != session.draft.floor
-    logger.info("[EDITING] new_room=%s, old_room=%s, room_changed=%s, new_floor=%s, old_floor=%s, floor_changed=%s",
+    logger.info("[PREVIEW_READY] new_room=%s, old_room=%s, room_changed=%s, new_floor=%s, old_floor=%s, floor_changed=%s",
                 new_room, session.draft.room, room_changed, new_floor, session.draft.floor, floor_changed)
 
-    # EDITING 阶段：新图片整体替换旧图，避免 RAG 混入旧图内容
+    # PREVIEW_READY 阶段：新图片整体替换旧图，避免 RAG 混入旧图内容
     if image_changed:
         session.draft.image_urls = [image_url]
         # 用户上传了新图片，重置"以描述为准"标记
         session.user_confirmed_description_priority = False
 
     # 若用户改了房间号，需要重新推断楼层（除非用户明确提供了新楼层）
-    # 判断逻辑：room 改变了 且 (floor 没变 或 LLM 可能从 room 自动推断了 floor)
     if room_changed:
         # 检查 LLM 是否可能从 room 自动推断了 floor（3位或4位纯数字）
         room_clean = re.sub(r'(房间|会议室|办公室|卫生间|茶水间|储藏室|仓库|机房|配电室|停车场)$', '', new_room or '')
@@ -341,18 +397,18 @@ async def _handle_editing(
 
         # 如果 floor 没变，或者 LLM 可能自动推断了 floor，都需要重新推断
         if not floor_changed or llm_may_infer_floor:
-            logger.info("[EDITING] 清空旧楼层，准备重新推断: draft.floor=%s → None (llm_may_infer=%s)",
+            logger.info("[PREVIEW_READY] 清空旧楼层，准备重新推断: draft.floor=%s → None (llm_may_infer=%s)",
                        session.draft.floor, llm_may_infer_floor)
             session.draft.floor = None
             # 同时清空 extraction 中的 floor，确保推断逻辑生效
             extraction["floor"] = None
 
     # image_url 传 None，防止 _apply_extraction 再次 append
-    logger.info("[EDITING] 调用推断函数前: extraction=%s, draft.floor=%s", extraction, session.draft.floor)
+    logger.info("[PREVIEW_READY] 调用推断函数前: extraction=%s, draft.floor=%s", extraction, session.draft.floor)
     _infer_floor_from_room(extraction, session.draft)
-    logger.info("[EDITING] 调用推断函数后: extraction=%s, draft.floor=%s", extraction, session.draft.floor)
+    logger.info("[PREVIEW_READY] 调用推断函数后: extraction=%s, draft.floor=%s", extraction, session.draft.floor)
     _apply_extraction(session.draft, extraction, None)
-    logger.info("[EDITING] 应用提取结果后: draft.room=%s, draft.floor=%s", session.draft.room, session.draft.floor)
+    logger.info("[PREVIEW_READY] 应用提取结果后: draft.room=%s, draft.floor=%s", session.draft.room, session.draft.floor)
 
     # 时间：本轮提到了才更新，没提到保留原值
     visit_time_text = extraction.get("visit_time_text")
@@ -382,12 +438,23 @@ async def _handle_editing(
             }
             return  # 等待用户确认后再继续，不立即调用 RAG
 
-    # description 或图片变了 → 清空 RAG 字段，重新检索
+    # description 或图片变了 → 清空 RAG 字段，重新检索 + 确认
     if description_changed or image_changed:
         _clear_rag_fields(session.draft)
+        async for event in _run_rag_and_confirm(session):
+            yield event
+        return
 
-    async for event in _run_rag_and_confirm(session):
-        yield event
+    # 只改了位置/时间等非核心字段 → 直接重新生成预览
+    ticket = build_ticket(session)
+    session.ticket = ticket
+    yield {"type": "ticket_ready", "ticket": ticket}
+    yield {"type": "text_delta", "content": "已更新预览，请确认或继续修改。"}
+    yield {
+        "type": "state_update",
+        "state": session.state.value,
+        "collected": session.draft.to_dict(),
+    }
 
 
 # ── 工具函数 ─────────────────────────────────────────────────────────────────

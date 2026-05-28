@@ -25,3 +25,13 @@ class MessageRequest(BaseModel):
 class UploadResponse(BaseModel):
     image_url: str
     file_size: int
+
+
+class SubmitTicketRequest(BaseModel):
+    session_id: str
+
+
+class SubmitTicketResponse(BaseModel):
+    success: bool
+    ticket_id: str
+    message: str | None = None

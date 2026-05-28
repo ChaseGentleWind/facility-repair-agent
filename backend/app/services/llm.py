@@ -117,7 +117,7 @@ async def extract_fields(
         return _clean_json(resp.choices[0].message.content)
     except Exception as exc:
         logger.warning("extract_fields failed: %s", exc)
-        return {}
+        return {"_error": "llm_call_failed"}
 
 
 async def extract_fields_editing(
@@ -146,7 +146,10 @@ async def extract_fields_editing(
         return _clean_json(resp.choices[0].message.content)
     except Exception as exc:
         logger.warning("extract_fields_editing failed: %s", exc)
-        return {}
+        return {"_error": "llm_call_failed"}
+
+
+_MAX_REPLY_HISTORY = 10
 
 
 async def generate_reply_stream(
@@ -154,12 +157,13 @@ async def generate_reply_stream(
     history: list[dict],
     missing: list[str],
 ) -> AsyncIterator[str]:
-    """流式生成追问回复，yield 文字片段。"""
+    """流式生成追问回复，yield 文字片段。只传最近几轮 history 避免 token 浪费和幻觉。"""
     system = reply_system_prompt(
         json.dumps(draft.to_dict(), ensure_ascii=False),
         missing,
     )
-    messages = [{"role": "system", "content": system}, *history]
+    recent = history[-_MAX_REPLY_HISTORY:]
+    messages = [{"role": "system", "content": system}, *recent]
     stream = await _client.chat.completions.create(
         model=settings.qwen_model,
         messages=messages,
@@ -175,15 +179,14 @@ async def generate_reply_stream(
 
 async def generate_confirmation_stream(
     draft: TicketDraft,
-    history: list[dict],
     visit_time: str,
 ) -> AsyncIterator[str]:
-    """流式生成工单确认摘要，yield 文字片段。"""
+    """流式生成工单确认摘要，yield 文字片段。不需要 history，纯基于 draft 生成。"""
     system = confirmation_system_prompt(
         json.dumps(draft.to_dict(), ensure_ascii=False),
         visit_time,
     )
-    messages = [{"role": "system", "content": system}, *history]
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": "请生成确认摘要。"}]
     stream = await _client.chat.completions.create(
         model=settings.qwen_model,
         messages=messages,
@@ -255,6 +258,37 @@ async def check_user_confirmed(text: str) -> bool:
     except Exception as exc:
         logger.warning("check_user_confirmed LLM fallback failed: %s", exc)
         return False
+
+_DENIAL_INTENT_SYSTEM = """\
+用户刚刚否认了一份报修工单摘要。判断用户意图属于以下哪种：
+- modify：用户想修改某个具体字段（如时间、位置、描述），例如"时间改成下午三点"、"不是A栋是B栋"、"描述不对，是漏水不是灯坏"
+- restart：用户完全否认所有内容，想重新开始，例如"全部不对"、"重新来"、"都错了"
+- unclear：无法判断用户想修改什么，例如"不对"、"不是"、"有问题"
+
+只输出 modify / restart / unclear 之一，不要输出任何解释。"""
+
+
+async def classify_denial_intent(user_message: str) -> str:
+    """判断用户否认确认摘要时的意图：modify / restart / unclear"""
+    try:
+        resp = await _client.chat.completions.create(
+            model=settings.qwen_model,
+            messages=[
+                {"role": "system", "content": _DENIAL_INTENT_SYSTEM},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=10,
+            temperature=0,
+            **_EXTRA,
+        )
+        result = resp.choices[0].message.content.strip().lower()
+        if result in ("modify", "restart", "unclear"):
+            return result
+        return "unclear"
+    except Exception as exc:
+        logger.warning("classify_denial_intent failed: %s", exc)
+        return "unclear"
+
 
 _DEFAULT_KEYWORD = {"随便", "都行", "无所谓", "任意", "不限", "你定", "尽快", "快点", "越快越好", "马上"}
 _RESOLVE_SYSTEM = """\

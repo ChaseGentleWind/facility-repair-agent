@@ -29,7 +29,7 @@ def build_ticket(session: Session) -> dict:
     return {
         "ticket_id": ticket_id,
         "repair_no": repair_no,
-        "order_status": "COMPLETED",
+        "order_status": "PREVIEW",
         "repair_type": draft.repair_type or "公司报修",
         "location": {
             "estate": draft.estate,

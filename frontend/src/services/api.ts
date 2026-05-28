@@ -1,4 +1,4 @@
-import type { InitResponse, UploadResponse } from '../types'
+import type { InitResponse, UploadResponse, SubmitTicketResponse } from '../types'
 
 let _apiBase = ''
 
@@ -53,5 +53,15 @@ export async function uploadImage(
     body: form,
   })
   if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+  return resp.json()
+}
+
+export async function submitTicket(sessionId: string): Promise<SubmitTicketResponse> {
+  const resp = await fetch(url('/api/v1/ticket/submit'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId }),
+  })
+  if (!resp.ok) throw new Error(`submit failed: ${resp.status}`)
   return resp.json()
 }

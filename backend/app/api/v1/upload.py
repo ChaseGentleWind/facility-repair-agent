@@ -44,7 +44,7 @@ async def upload_image_endpoint(
     try:
         image_url, file_size = upload_image(data, content_type, session_id)
     except Exception as exc:
-        logger.exception("MinIO upload failed: %s", exc)
+        logger.exception("Image upload failed: %s", exc)
         raise HTTPException(status_code=500, detail="图片上传失败，请稍后重试")
 
     return UploadResponse(image_url=image_url, file_size=file_size)

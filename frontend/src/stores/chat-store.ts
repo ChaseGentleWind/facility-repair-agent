@@ -1,5 +1,5 @@
 import type { AgentState, ChatMessage, SSEEvent, WidgetConfig } from '../types'
-import { chatInit, chatMessage, uploadImage, setApiBase } from '../services/api'
+import { chatInit, chatMessage, uploadImage, submitTicket, setApiBase } from '../services/api'
 import { parseSSEStream } from '../services/sse-parser'
 import { compressImage } from '../services/image-compress'
 
@@ -235,7 +235,7 @@ export class ChatStore {
           console.log('[repair-agent] ticket_ready received, dispatching event', evt.ticket)
           this._dispatchEvent('onRepairTicketGenerated', evt.ticket)
         }
-        this.agentState = 'COMPLETED'
+        this.agentState = 'PREVIEW_READY'
         this._notify()
         break
 
@@ -271,6 +271,40 @@ export class ChatStore {
     this._hostElement?.dispatchEvent(
       new CustomEvent(name, { bubbles: true, composed: true, detail }),
     )
+  }
+
+  async submitTicket() {
+    if (!this.sessionId) {
+      console.error('[chat-store] submitTicket: no session')
+      return
+    }
+    if (this.agentState !== 'PREVIEW_READY') {
+      console.error('[chat-store] submitTicket: state is not PREVIEW_READY')
+      return
+    }
+
+    try {
+      const response = await submitTicket(this.sessionId)
+      if (response.success) {
+        this.agentState = 'SUBMITTED'
+        this.messages.push({
+          role: 'bot',
+          type: 'text',
+          content: `工单已成功提交！工单号：${response.ticket_id}`,
+          timestamp: Date.now(),
+        })
+        this._notify()
+      }
+    } catch (err) {
+      console.error('[chat-store] submitTicket error:', err)
+      this.messages.push({
+        role: 'bot',
+        type: 'text',
+        content: '提交失败，请稍后重试',
+        timestamp: Date.now(),
+      })
+      this._notify()
+    }
   }
 
   resetSession() {

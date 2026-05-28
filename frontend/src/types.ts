@@ -25,6 +25,8 @@ export type AgentState =
   | 'COLLECTING'
   | 'WAITING_IMAGE'
   | 'CONFIRMING'
+  | 'PREVIEW_READY'
+  | 'SUBMITTED'
   | 'COMPLETED'
   | 'ESCALATED'
 
@@ -50,4 +52,10 @@ export interface InitResponse {
 export interface UploadResponse {
   image_url: string
   file_size: number
+}
+
+export interface SubmitTicketResponse {
+  success: boolean
+  ticket_id: string
+  message?: string
 }

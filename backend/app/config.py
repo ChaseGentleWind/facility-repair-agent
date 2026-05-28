@@ -19,7 +19,11 @@ class Settings(BaseSettings):
     local_upload_dir: str = str(_BASE_DIR / "data" / "uploads")
 
     session_ttl_seconds: int = 1800
-    max_retry_count: int = 3
+    max_stall_count: int = 3
+
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com/v1"
+    deepseek_model: str = "deepseek-v4-flash"
 
     allowed_origins: str = "*"
 
