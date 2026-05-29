@@ -59,6 +59,7 @@ async def process_message(
 async def _handle_collecting(
     session: Session,
     user_message: str,
+    
     image_url: str | None,
 ) -> AsyncIterator[dict]:
     # 提取字段（有图片时会同时生成 image_description_text）
@@ -82,7 +83,7 @@ async def _handle_collecting(
     if image_url:
         session.draft.image_urls = [image_url]
 
-    _infer_floor_from_room(extraction, session.draft)
+    _infer_location_from_area_or_room(extraction, session.draft)
     _apply_extraction(session.draft, extraction, None)
 
     # 若本轮提取到 visit_time_text 且 draft 中尚未解析，立即解析为绝对时间
@@ -202,7 +203,7 @@ async def _handle_waiting_image(
         # WAITING_IMAGE 阶段：新图片替换旧图，避免累积
         session.draft.image_urls = [image_url]
 
-        _infer_floor_from_room(extraction, session.draft)
+        _infer_location_from_area_or_room(extraction, session.draft)
         _apply_extraction(session.draft, extraction, None)
     elif not skipped:
         # 用户既没上传图片也没跳过，继续等待
@@ -307,7 +308,7 @@ async def _handle_confirming(
             if image_url:
                 session.draft.image_urls = [image_url]
 
-            _infer_floor_from_room(extraction, session.draft)
+            _infer_location_from_area_or_room(extraction, session.draft)
             _apply_extraction(session.draft, extraction, None)
             visit_time_text = extraction.get("visit_time_text")
             if visit_time_text:
@@ -375,13 +376,17 @@ async def _handle_preview_ready(
 
     description_changed = bool(extraction.get("description"))
     image_changed = image_url is not None
-    # 真正检测 room 是否改变：提取到了新 room 且与原值不同
+    # 检测 area / room 是否改变（含连字符的 area 与纯房号 room 互斥）
+    new_area = extraction.get("area")
+    area_changed = new_area is not None and new_area != session.draft.area
     new_room = extraction.get("room")
     room_changed = new_room is not None and new_room != session.draft.room
     new_floor = extraction.get("floor")
     floor_changed = new_floor is not None and new_floor != session.draft.floor
-    logger.info("[PREVIEW_READY] new_room=%s, old_room=%s, room_changed=%s, new_floor=%s, old_floor=%s, floor_changed=%s",
-                new_room, session.draft.room, room_changed, new_floor, session.draft.floor, floor_changed)
+    new_building = extraction.get("building")
+    building_changed = new_building is not None and new_building != session.draft.building
+    logger.info("[PREVIEW_READY] new_area=%s new_room=%s area_changed=%s room_changed=%s new_floor=%s floor_changed=%s new_building=%s building_changed=%s",
+                new_area, new_room, area_changed, room_changed, new_floor, floor_changed, new_building, building_changed)
 
     # PREVIEW_READY 阶段：新图片整体替换旧图，避免 RAG 混入旧图内容
     if image_changed:
@@ -389,23 +394,30 @@ async def _handle_preview_ready(
         # 用户上传了新图片，重置"以描述为准"标记
         session.user_confirmed_description_priority = False
 
-    # 若用户改了房间号，需要重新推断楼层（除非用户明确提供了新楼层）
+    # 用户改了 area → 同时重推 building/floor（除非用户也明确给了新值）
+    if area_changed:
+        if not building_changed:
+            logger.info("[PREVIEW_READY] area 变更，清空旧 building 准备重推: %s → None", session.draft.building)
+            session.draft.building = None
+            extraction["building"] = None
+        if not floor_changed:
+            logger.info("[PREVIEW_READY] area 变更，清空旧 floor 准备重推: %s → None", session.draft.floor)
+            session.draft.floor = None
+            extraction["floor"] = None
+
+    # 用户改了 room → 重新推断 floor（除非用户明确提供了新楼层）
     if room_changed:
-        # 检查 LLM 是否可能从 room 自动推断了 floor（3位或4位纯数字）
         room_clean = re.sub(r'(房间|会议室|办公室|卫生间|茶水间|储藏室|仓库|机房|配电室|停车场)$', '', new_room or '')
         llm_may_infer_floor = bool(re.match(r'^\d{3,4}$', room_clean))
-
-        # 如果 floor 没变，或者 LLM 可能自动推断了 floor，都需要重新推断
         if not floor_changed or llm_may_infer_floor:
-            logger.info("[PREVIEW_READY] 清空旧楼层，准备重新推断: draft.floor=%s → None (llm_may_infer=%s)",
+            logger.info("[PREVIEW_READY] room 变更，清空旧楼层准备重推: %s → None (llm_may_infer=%s)",
                        session.draft.floor, llm_may_infer_floor)
             session.draft.floor = None
-            # 同时清空 extraction 中的 floor，确保推断逻辑生效
             extraction["floor"] = None
 
     # image_url 传 None，防止 _apply_extraction 再次 append
     logger.info("[PREVIEW_READY] 调用推断函数前: extraction=%s, draft.floor=%s", extraction, session.draft.floor)
-    _infer_floor_from_room(extraction, session.draft)
+    _infer_location_from_area_or_room(extraction, session.draft)
     logger.info("[PREVIEW_READY] 调用推断函数后: extraction=%s, draft.floor=%s", extraction, session.draft.floor)
     _apply_extraction(session.draft, extraction, None)
     logger.info("[PREVIEW_READY] 应用提取结果后: draft.room=%s, draft.floor=%s", session.draft.room, session.draft.floor)
@@ -459,44 +471,80 @@ async def _handle_preview_ready(
 
 # ── 工具函数 ─────────────────────────────────────────────────────────────────
 
-def _infer_floor_from_room(extraction: dict, draft: TicketDraft) -> None:
+def _infer_location_from_area_or_room(extraction: dict, draft: TicketDraft) -> None:
     """
-    若 LLM 提取到 room 但未提取 floor，且 draft.floor 为空，从 room 推断 floor。
+    从 extraction["area"] 或 extraction["room"] 反向推断 building / floor。
 
-    推断规则：
-    - 3位纯数字（302）→ 3楼
-    - 4位纯数字（1205）→ 12楼
-    - 数字+字母+数字（7S1、12B5）→ 首位数字+楼
-    - 连字符格式（2-L29、3-B05）→ L29/B05
+    - area：含 `-` 的复合编号（2-L28、8-2401、2-701A、3-B05停车场）
+      · 同时推断 building（T<n>）和 floor，仅在 draft 对应字段为空时填入
+    - room：不含 `-` 的纯房号（302、4505、7S1）
+      · 仅推断 floor，仅在 draft.floor 为空时填入
+
+    互斥处理：area 与 room 同时被填时，记 warning 并清空 room（area 优先）。
+    若 LLM 已自行提取 building/floor，规则不再覆盖。
     """
+    area = extraction.get("area")
     room = extraction.get("room")
+
+    # 互斥保护：area 优先
+    if area and room:
+        logger.warning("[互斥] LLM 同时提取了 area=%s 和 room=%s，保留 area，清空 room", area, room)
+        room = None
+        extraction["room"] = None
+
     floor_extracted = extraction.get("floor")
+    building_extracted = extraction.get("building")
 
-    logger.info("[推断楼层] room=%s, floor_extracted=%s, draft.floor=%s", room, floor_extracted, draft.floor)
-
-    # 只在以下情况推断：LLM 未提取 floor，且 draft 中也没有 floor
-    if not room or floor_extracted or draft.floor:
-        logger.info("[推断楼层] 跳过推断: not room=%s, floor_extracted=%s, draft.floor=%s", not room, floor_extracted, draft.floor)
+    # ── area 推断 ──────────────────────────────────────────────────────────
+    if area:
+        area_clean = re.sub(
+            r'(房间|会议室|办公室|卫生间|茶水间|储藏室|仓库|机房|配电室|停车场)$', '', area
+        )
+        # 2-L28 / 3-B05 → building=T2/T3, floor=L28/B5
+        if m := re.match(r'^(\d+)-([LB])(\d+)$', area_clean):
+            b_num, prefix, num = m.group(1), m.group(2), int(m.group(3))
+            if not building_extracted and not draft.building:
+                extraction["building"] = f"T{b_num}"
+                logger.info("从 area '%s' 推断楼栋: T%s", area, b_num)
+            if not floor_extracted and not draft.floor:
+                extraction["floor"] = f"{prefix}{num}楼" if prefix == "L" else f"B{num}"
+                logger.info("从 area '%s' 推断楼层: %s", area, extraction["floor"])
+        # 8-2401 → building=T8, floor=24楼
+        elif m := re.match(r'^(\d+)-(\d{4})$', area_clean):
+            b_num, room_num = m.group(1), m.group(2)
+            if not building_extracted and not draft.building:
+                extraction["building"] = f"T{b_num}"
+                logger.info("从 area '%s' 推断楼栋: T%s", area, b_num)
+            if not floor_extracted and not draft.floor:
+                extraction["floor"] = f"{room_num[:2]}楼"
+                logger.info("从 area '%s' 推断楼层: %s", area, extraction["floor"])
+        # 2-701A / 2-301 → building=T2, floor=7楼/3楼
+        elif m := re.match(r'^(\d+)-(\d{3})[A-Z]?\d*$', area_clean):
+            b_num, room_num = m.group(1), m.group(2)
+            if not building_extracted and not draft.building:
+                extraction["building"] = f"T{b_num}"
+                logger.info("从 area '%s' 推断楼栋: T%s", area, b_num)
+            if not floor_extracted and not draft.floor:
+                extraction["floor"] = f"{room_num[0]}楼"
+                logger.info("从 area '%s' 推断楼层: %s", area, extraction["floor"])
         return
 
-    # 去除中文后缀（"房间"、"会议室"等）后再匹配
-    room_clean = re.sub(r'(房间|会议室|办公室|卫生间|茶水间|储藏室|仓库|机房|配电室|停车场)$', '', room)
+    # ── room 推断 ──────────────────────────────────────────────────────────
+    if not room or floor_extracted or draft.floor:
+        return
 
-    # 连字符格式：2-L29 → L29, 3-B05 → B05（优先匹配，因为更具体）
-    if m := re.match(r'^\d+-([LB]\d+)', room_clean):
-        extraction["floor"] = m.group(1)
-        logger.info("从房间号 '%s' 推断楼层: %s", room, extraction["floor"])
+    room_clean = re.sub(
+        r'(房间|会议室|办公室|卫生间|茶水间|储藏室|仓库|机房|配电室|停车场)$', '', room
+    )
 
     # 3位纯数字：302 → 3楼
-    elif re.match(r'^\d{3}$', room_clean):
+    if re.match(r'^\d{3}$', room_clean):
         extraction["floor"] = f"{room_clean[0]}楼"
         logger.info("从房间号 '%s' 推断楼层: %s", room, extraction["floor"])
-
-    # 4位纯数字：1205 → 12楼
+    # 4位纯数字：1205 → 12楼，4505 → 45楼
     elif re.match(r'^\d{4}$', room_clean):
         extraction["floor"] = f"{room_clean[:2]}楼"
         logger.info("从房间号 '%s' 推断楼层: %s", room, extraction["floor"])
-
     # 数字+字母+数字：7S1 → 7楼, 12B5 → 12楼
     elif m := re.match(r'^(\d{1,2})[A-Z]\d+', room_clean):
         extraction["floor"] = f"{m.group(1)}楼"
@@ -520,9 +568,13 @@ def _apply_extraction(draft: TicketDraft, extraction: dict, image_url: str | Non
         draft.building = extraction["building"]
     if extraction.get("floor"):
         draft.floor = extraction["floor"]
-    if extraction.get("unit"):
-        draft.unit = extraction["unit"]
+    if extraction.get("area"):
+        draft.area = extraction["area"]
+        # area 与 room 互斥：本轮提取到 area 时清空 draft.room
+        draft.room = None
     if extraction.get("room"):
         draft.room = extraction["room"]
+        # area 与 room 互斥：本轮提取到 room 时清空 draft.area
+        draft.area = None
     if image_url and image_url not in draft.image_urls:
         draft.image_urls.append(image_url)

@@ -27,7 +27,7 @@ EXTRACTION_SYSTEM = """\
 - 若图片模糊或无法判断内容，image_description_text 说明情况，其他字段按无图片处理，不要猜测
 
 提取规则：
-- description：问题描述（故障现象），保留用户原意，去掉无关寒暄和位置信息；图片中观察到的故障现象可补充进来
+- description：问题描述（故障现象），保留用户原意，去掉无关寒暄和位置信息；图片中观察到的故障现象可补充进来。若用户只提到"大堂/大厅/走廊/电梯间/卫生间"等公共空间名称且没有编号，把空间名保留在 description 里（如"大堂漏水"），area 与 room 都返回 null
 - estate：楼盘/项目名称，如"前海嘉里中心"、"嘉里建设广场"、"万象城"、"华润城"
 - building：楼栋/建筑物标识。特征是字母在数字之前，常见格式：
   · 字母+数字：A1、B3、T25、C12（字母必须在数字前面）
@@ -35,6 +35,7 @@ EXTRACTION_SYSTEM = """\
   · 命名建筑：研发楼、行政楼、食堂、图书馆
   · 带"栋"后缀：T25栋、A1栋
   注意：只要能标识一栋建筑的名称或编号都算 building，不要因为格式不常见就返回 null
+  ⚠️ 重要：当 area 形如"2-L28"、"8-2401"、"2-701A"时，**不要**把前缀数字解析成 building，系统会自动推断
 - floor：楼层标识。常见格式：
   · 数字+楼/层：3楼、3层、12楼
   · 数字+F：1F、2F、3F、12F
@@ -42,15 +43,19 @@ EXTRACTION_SYSTEM = """\
   · 地下层：B1、B2、B3（B 在数字前面，表示地下楼层）
   · 纯数字"3"若上下文明确是楼层则填入，否则不确定
   · 中文表述：三楼、地下一层、负一层、顶楼、天台、裙楼
-- unit：单元/座标识，如"1单元"、"A座"、"东塔"、"北区"
-- room：房间号或区域（可选）。常见格式：
-  · 纯数字：302、1203
+  ⚠️ 重要：不要尝试从 area 或 room 推断 floor（系统会自动处理）
+- area：区域编号（与 room 互斥，含连字符的复合编号一律归此字段）。常见格式：
+  · 楼栋号-楼层标识：2-L28、3-L05、2-B05（其中 L 表示楼层、B 表示地下）
+  · 楼栋号-房号：8-2401、2-301、2-701A
+  · 带功能后缀：2-L29会议室、3-B05停车场
+  · ⚠️ 含"-"的位置编号一律归 area，不要拆分到 room 或 building
+- room：房间号（与 area 互斥，**不含连字符**的纯房号）。常见格式：
+  · 纯数字：302、1203、4505、2207
   · 数字+字母：301A、1012B
   · 数字+字母+数字（门牌号格式）：7S1、3A2、12B5
-  · 含连字符的复合编号：2-L29、3-B05
-  · 功能区域：302会议室、茶水间、走廊、电梯间、卫生间
+  · 功能区域：302会议室、茶水间
   · 图片中识别到的门牌号：保留完整编号
-  ⚠️ 重要：room 填完整编号即可，不要尝试从 room 推断 floor（系统会自动处理）
+  ⚠️ 重要：不要尝试从 room 推断 floor（系统会自动处理）
 - visit_time_text：用户表达的期望上门时间的原始自然语言，如"下午四点"、"一小时后"、"尽快"、"随便"、"今天三点半"、"越快越好"、"时间越快愈好"，可选
 - needs_human：⚠️ 极其严格的判断规则，仅当用户消息中明确包含以下触发词时才为 true：
   · 必须包含："人工"、"客服"、"转人工"、"找人工"、"联系客服"、"要找客服"、"接人工"
@@ -69,21 +74,29 @@ EXTRACTION_SYSTEM = """\
 如果所有字段均无歧义，clarification_question 返回 null。
 
 提取示例：
-  用户："前海嘉里中心T25栋3楼1单元空调不制冷" → estate="前海嘉里中心", building="T25栋", floor="3楼", unit="1单元", room=null, description="空调不制冷", clarification_question=null
-  用户："我在A1的5F，灯坏了" → building="A1", floor="5F", room=null, description="灯坏了", clarification_question=null
-  用户："12号楼地下一层漏水" → building="12号楼", floor="地下一层", room=null, description="漏水", clarification_question=null
-  用户："图书馆二楼302卫生间马桶堵了" → building="图书馆", floor="二楼", room="302卫生间", description="马桶堵了", clarification_question=null
-  用户："A栋L3空调坏了" → building="A栋", floor="L3", room=null, description="空调坏了", clarification_question=null
-  用户："B2停车场有漏水" → floor="B2", room="停车场", description="漏水", clarification_question=null
-  用户："1205灯坏了" → room="1205", floor=null, description="灯坏了", clarification_question=null
-  用户："302会议室空调坏了" → room="302会议室", floor=null, description="空调坏了", clarification_question=null
-  用户："2-L29会议室空调噪音大" → room="2-L29会议室", floor=null, description="空调噪音大", clarification_question=null
-  用户："3-B05停车场漏水" → room="3-B05停车场", floor=null, description="漏水", clarification_question=null
-  用户："7S1空调坏了" → room="7S1", floor=null, description="空调坏了", clarification_question=null
-  用户："12B5灯不亮" → room="12B5", floor=null, description="灯不亮", clarification_question=null
-  用户："1309房间漏水" → room="1309房间", floor=null, description="漏水", clarification_question=null
-  用户："A栋3楼302" → building="A栋", floor="3楼", room="302", description=null, clarification_question=null
-  图片中识别到门牌号"7S1" → room="7S1", floor=null
+  用户："前海嘉里中心T25栋3楼空调不制冷" → estate="前海嘉里中心", building="T25栋", floor="3楼", area=null, room=null, description="空调不制冷", clarification_question=null
+  用户："我在A1的5F，灯坏了" → building="A1", floor="5F", area=null, room=null, description="灯坏了", clarification_question=null
+  用户："12号楼地下一层漏水" → building="12号楼", floor="地下一层", area=null, room=null, description="漏水", clarification_question=null
+  用户："图书馆二楼302卫生间马桶堵了" → building="图书馆", floor="二楼", room="302卫生间", area=null, description="马桶堵了", clarification_question=null
+  用户："A栋L3空调坏了" → building="A栋", floor="L3", area=null, room=null, description="空调坏了", clarification_question=null
+  用户："B2停车场有漏水" → floor="B2", area=null, room=null, description="停车场漏水", clarification_question=null
+  用户："2-L28空调坏了" → area="2-L28", building=null, floor=null, room=null, description="空调坏了", clarification_question=null
+  用户："8-2401漏水" → area="8-2401", building=null, floor=null, room=null, description="漏水", clarification_question=null
+  用户："2-701A灯不亮" → area="2-701A", building=null, floor=null, room=null, description="灯不亮", clarification_question=null
+  用户："2-L29会议室空调噪音大" → area="2-L29会议室", building=null, floor=null, room=null, description="空调噪音大", clarification_question=null
+  用户："3-B05停车场漏水" → area="3-B05停车场", building=null, floor=null, room=null, description="漏水", clarification_question=null
+  用户："4505灯不亮" → room="4505", floor=null, area=null, description="灯不亮", clarification_question=null
+  用户："2207漏水" → room="2207", floor=null, area=null, description="漏水", clarification_question=null
+  用户："1205灯坏了" → room="1205", floor=null, area=null, description="灯坏了", clarification_question=null
+  用户："302会议室空调坏了" → room="302会议室", floor=null, area=null, description="空调坏了", clarification_question=null
+  用户："7S1空调坏了" → room="7S1", floor=null, area=null, description="空调坏了", clarification_question=null
+  用户："12B5灯不亮" → room="12B5", floor=null, area=null, description="灯不亮", clarification_question=null
+  用户："1309房间漏水" → room="1309房间", floor=null, area=null, description="漏水", clarification_question=null
+  用户："A栋3楼302" → building="A栋", floor="3楼", room="302", area=null, description=null, clarification_question=null
+  用户："大堂漏水" → description="大堂漏水", area=null, room=null
+  用户："大厅有水渍" → description="大厅有水渍", area=null, room=null
+  图片中识别到门牌号"7S1" → room="7S1", area=null, floor=null
+  图片中识别到门牌号"2-L28" → area="2-L28", building=null, floor=null, room=null
   用户："今天下午三点半来" → visit_time_text="今天下午三点半"
   用户："尽快来" → visit_time_text="尽快"
   用户："一小时后" → visit_time_text="一小时后"
@@ -105,7 +118,7 @@ EXTRACTION_SYSTEM = """\
   "estate": string | null,
   "building": string | null,
   "floor": string | null,
-  "unit": string | null,
+  "area": string | null,
   "room": string | null,
   "visit_time_text": string | null,
   "needs_human": boolean,
@@ -237,7 +250,8 @@ def editing_extract_prompt(draft_json: str, user_message: str, image_url: str | 
         f"当前工单信息（用户正在修改）：{draft_json}",
         f"用户本轮修改指令：{user_message}",
         "规则：只提取用户本轮明确提到或图片中可见的字段，未提及的字段一律返回 null（保留原值）。",
-        "⚠️ 特别注意：如果用户只提到了房间号（如'803'、'2103'），但没有明确提到楼层（如'8楼'、'21楼'），floor 字段必须返回 null，不要从房间号推断楼层。系统会自动处理楼层推断。",
+        "⚠️ 特别注意：如果用户只提到了 area（如'2-L28'、'8-2401'）或 room（如'803'、'2103'），但没有明确提到楼栋/楼层，building 与 floor 字段必须返回 null（保留原值），由系统自动推断。",
+        "⚠️ area 与 room 互斥：含'-'的复合编号一律归 area，不要拆分到 room；纯房号归 room。",
     ]
     if image_url:
         lines.append("用户上传了新的现场照片（见图片），请先生成 image_description_text，再提取结构化字段。")

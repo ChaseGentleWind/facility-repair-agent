@@ -26,7 +26,7 @@ class TicketDraft:
     estate: str | None = None
     building: str | None = None
     floor: str | None = None
-    unit: str | None = None
+    area: str | None = None
     room: str | None = None
     visit_time: str | None = None        # 用户期望上门时间，格式：M月D日 H时mm分
     image_urls: list[str] = field(default_factory=list)
@@ -57,7 +57,7 @@ class TicketDraft:
             "estate": self.estate,
             "building": self.building,
             "floor": self.floor,
-            "unit": self.unit,
+            "area": self.area,
             "room": self.room,
             "visit_time": self.visit_time,
             "image_urls": self.image_urls,

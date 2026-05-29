@@ -267,10 +267,10 @@
             <option value="">请选择</option>
             <option value="电气报修类">电气报修类</option>
             <option value="给排水报修类">给排水报修类</option>
-            <option value="公共设备设施保修类">公共设备设施保修类</option>
+            <option value="公共设备设施报修类">公共设备设施报修类</option>
             <option value="公寓维修类">公寓维修类</option>
             <option value="空调报修类">空调报修类</option>
-            <option value="土木工保修类">土木工保修类</option>
+            <option value="土木工报修类">土木工报修类</option>
           </select>
         </div>
 
@@ -291,8 +291,8 @@
               <input class="field-input" id="f-floor" placeholder="楼层" />
             </div>
             <div class="loc-item">
-              <span class="loc-label">房间</span>
-              <input class="field-input" id="f-room" placeholder="选填" />
+              <span class="loc-label">区域/房间</span>
+              <input class="field-input" id="f-room" placeholder="如 2-L28、4505" />
             </div>
           </div>
         </div>
@@ -369,7 +369,7 @@
       document.getElementById('f-estate').value = loc.estate || ''
       document.getElementById('f-building').value = loc.building || ''
       document.getElementById('f-floor').value = loc.floor || ''
-      document.getElementById('f-room').value = loc.unit || ''
+      document.getElementById('f-room').value = loc.area || loc.room || ''
 
       // 描述
       document.getElementById('f-description').value = ticket.problem_description || ''
@@ -430,6 +430,32 @@
       const hour = parseInt(timeParts[0])
       const minute = parseInt(timeParts[1])
       return month + '月' + day + '日 ' + hour + '时' + String(minute).padStart(2, '0') + '分'
+    }
+
+    function collectTicketFromForm() {
+      const baseFault = (currentTicket && currentTicket.fault_type) || {}
+      const imageUrls = Array.from(
+        document.querySelectorAll('#f-images .img-item img')
+      ).map(function(img) { return img.src })
+      const locInput = document.getElementById('f-room').value.trim()
+      const isArea = locInput.includes('-')
+      return {
+        location: {
+          estate: document.getElementById('f-estate').value.trim(),
+          building: document.getElementById('f-building').value.trim(),
+          floor: document.getElementById('f-floor').value.trim(),
+          area: isArea ? locInput : null,
+          room: isArea ? null : (locInput || null),
+        },
+        problem_description: document.getElementById('f-description').value.trim(),
+        visit_time: getVisitTimeString(),
+        repair_type: document.getElementById('f-repair-type').value,
+        fault_type: {
+          code: baseFault.code || null,
+          displayName: document.getElementById('f-fault-type').value || null,
+        },
+        image_urls: imageUrls,
+      }
     }
 
     function createImgItem(url) {
@@ -504,10 +530,11 @@
       }
 
       try {
+        const ticketOverride = collectTicketFromForm()
         const resp = await fetch('/api/v1/ticket/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sessionId })
+          body: JSON.stringify({ session_id: sessionId, ticket: ticketOverride })
         })
         const data = await resp.json()
 

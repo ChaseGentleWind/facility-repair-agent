@@ -29,6 +29,7 @@ class UploadResponse(BaseModel):
 
 class SubmitTicketRequest(BaseModel):
     session_id: str
+    ticket: dict | None = None  # 前端编辑后的工单覆盖值；None 表示直接使用服务端快照
 
 
 class SubmitTicketResponse(BaseModel):

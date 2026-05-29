@@ -23,6 +23,12 @@ async def submit_ticket(req: SubmitTicketRequest) -> SubmitTicketResponse:
     if session.ticket is None:
         raise HTTPException(status_code=400, detail="工单数据缺失，请重新确认")
 
+    if req.ticket:
+        for key in ("location", "problem_description", "visit_time",
+                    "repair_type", "fault_type", "image_urls"):
+            if key in req.ticket:
+                session.ticket[key] = req.ticket[key]
+
     session.ticket["order_status"] = "PENDING"
 
     # TODO: 调用实际的工单系统 API
