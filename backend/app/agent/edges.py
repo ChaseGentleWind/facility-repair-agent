@@ -11,6 +11,7 @@ NODE_ASK_IMAGE = "ask_image"
 NODE_WAIT_IMAGE = "wait_image"
 NODE_RAG_CONFIRM = "rag_and_confirm"
 NODE_CONFIRMING = "confirming"
+NODE_RE_CONFIRM = "re_confirm"
 NODE_PREVIEW_EDIT = "preview_edit"
 NODE_STREAM_REPLY = "stream_reply"
 NODE_ESCALATED = "escalated"
@@ -80,12 +81,16 @@ def after_wait_image(state: GraphState) -> str:
 
 
 def after_confirming(state: GraphState) -> str:
-    """confirming 后：confirmed → finalize，restart/modify → collect_extract"""
+    """confirming 后路由：
+    - confirmed / restart / unclear → finalize
+    - modify + need_rerag → rag_and_confirm
+    - modify + no_rerag → re_confirm（跳过 RAG 直接重生成确认摘要）
+    """
     intent = state.get("_intent")
-    if intent == "confirmed":
-        return NODE_FINALIZE
-    elif intent in ("restart", "modify"):
-        return NODE_COLLECT_EXTRACT
+    if intent == "modify":
+        if state.get("_need_rerag"):
+            return NODE_RAG_CONFIRM
+        return NODE_RE_CONFIRM
     return NODE_FINALIZE
 
 

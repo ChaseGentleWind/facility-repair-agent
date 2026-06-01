@@ -33,7 +33,9 @@ async def collect_extract(state: GraphState) -> dict:
     image_url = state["image_url"]
     events = []
 
-    extraction = await llm.extract_fields(session.draft, user_message, image_url)
+    extraction = await llm.extract_fields(
+        session.draft, user_message, image_url, session.pending_clarification
+    )
 
     if extraction.get("_error"):
         msg = "系统繁忙，请稍后再试一次。"
@@ -41,6 +43,9 @@ async def collect_extract(state: GraphState) -> dict:
         events.append({"type": "text_delta", "content": msg})
         events.append({"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()})
         return {"events": events, "_extraction": extraction}
+
+    # 清空已使用的澄清上下文
+    session.pending_clarification = None
 
     image_description = extraction.get("image_description_text")
     if image_description:
@@ -50,6 +55,9 @@ async def collect_extract(state: GraphState) -> dict:
 
     if image_url:
         session.draft.image_urls = [image_url]
+
+    if extraction.get("user_confirmed_description_priority"):
+        session.user_confirmed_description_priority = True
 
     infer_location_from_area_or_room(extraction, session.draft)
     apply_extraction(session.draft, extraction, None)
@@ -81,6 +89,10 @@ async def collect_extract(state: GraphState) -> dict:
 
     clarification = extraction.get("clarification_question")
     if clarification:
+        session.pending_clarification = {
+            "question": clarification,
+            "asked_in_state": session.state.value,
+        }
         session.history.append({"role": "assistant", "content": clarification})
         events.append({"type": "text_delta", "content": clarification})
         events.append({"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()})
@@ -153,7 +165,9 @@ async def wait_image(state: GraphState) -> dict:
     skipped = any(kw in user_message for kw in _SKIP_KEYWORDS)
 
     if image_url:
-        extraction = await llm.extract_fields(session.draft, user_message, image_url)
+        extraction = await llm.extract_fields(
+            session.draft, user_message, image_url, session.pending_clarification
+        )
 
         if extraction.get("_error"):
             msg = "系统繁忙，请重新发送图片试试。"
@@ -162,15 +176,31 @@ async def wait_image(state: GraphState) -> dict:
             events.append({"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()})
             return {"events": events, "_proceed_to_rag": False}
 
+        session.pending_clarification = None
+
         image_description = extraction.get("image_description_text")
         if image_description:
             session.image_description = image_description
             session.history.append({"role": "assistant", "content": image_description})
             events.append({"type": "text_delta", "content": image_description})
 
+        if extraction.get("user_confirmed_description_priority"):
+            session.user_confirmed_description_priority = True
+
         session.draft.image_urls = [image_url]
         infer_location_from_area_or_room(extraction, session.draft)
         apply_extraction(session.draft, extraction, None)
+
+        clarification = extraction.get("clarification_question")
+        if clarification:
+            session.pending_clarification = {
+                "question": clarification,
+                "asked_in_state": session.state.value,
+            }
+            session.history.append({"role": "assistant", "content": clarification})
+            events.append({"type": "text_delta", "content": clarification})
+            events.append({"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()})
+            return {"events": events, "_proceed_to_rag": False}
 
         return {"events": events, "_proceed_to_rag": True}
 
@@ -221,7 +251,7 @@ async def confirming(state: GraphState) -> dict:
         logger.info("ticket_ready: session=%s ticket_id=%s", session.session_id, ticket.get("ticket_id"))
         events.append({"type": "ticket_ready", "ticket": ticket})
         events.append({"type": "text_delta", "content": "好的！报修单预览已生成。请点击「提交工单」按钮完成提交，或告诉我需要修改的内容。"})
-        return {"events": events, "_intent": "confirmed"}
+        return {"events": events, "_intent": "confirmed", "_need_rerag": False}
     intent = await llm.classify_denial_intent(user_message)
     logger.info("[CONFIRMING] denial intent: %s, message: %s", intent, user_message)
     if intent == "restart":
@@ -229,39 +259,73 @@ async def confirming(state: GraphState) -> dict:
         session.state = AgentState.COLLECTING
         session.stall_count = 0
         session.last_missing = []
+        session.pending_clarification = None
         msg = "好的，我们重新开始。请描述您遇到的问题。"
         session.history.append({"role": "assistant", "content": msg})
         events.append({"type": "text_delta", "content": msg})
         events.append({"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()})
-        return {"events": events, "_intent": "restart"}
+        return {"events": events, "_intent": "restart", "_need_rerag": False}
     elif intent == "modify":
-        session.state = AgentState.COLLECTING
-        extraction = await llm.extract_fields_editing(session.draft, user_message, image_url)
+        extraction = await llm.extract_fields_editing(
+            session.draft, user_message, image_url, session.pending_clarification
+        )
         if extraction.get("_error"):
             msg = "系统繁忙，请稍后再试一次。"
             session.history.append({"role": "assistant", "content": msg})
             events.append({"type": "text_delta", "content": msg})
             events.append({"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()})
-            return {"events": events, "_intent": "modify"}
+            return {"events": events, "_intent": "modify", "_need_rerag": False}
+
+        session.pending_clarification = None
+
         image_description = extraction.get("image_description_text")
         if image_description:
             session.image_description = image_description
             session.history.append({"role": "assistant", "content": image_description})
             events.append({"type": "text_delta", "content": image_description})
+        if extraction.get("user_confirmed_description_priority"):
+            session.user_confirmed_description_priority = True
         if image_url:
             session.draft.image_urls = [image_url]
+            session.user_confirmed_description_priority = False
+
+        description_changed = bool(extraction.get("description"))
+        image_changed = image_url is not None
+
+        # 图文冲突时先询问，不立即修改
+        if (description_changed and not image_changed and session.draft.image_urls
+                and not session.user_confirmed_description_priority):
+            old_image = session.draft.image_urls[0]
+            re_extraction = await llm.extract_fields_editing(session.draft, user_message, old_image)
+            clarification = re_extraction.get("clarification_question")
+            if clarification:
+                session.pending_clarification = {
+                    "question": clarification,
+                    "asked_in_state": session.state.value,
+                }
+                session.history.append({"role": "assistant", "content": clarification})
+                events.append({"type": "text_delta", "content": clarification})
+                events.append({"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()})
+                return {"events": events, "_intent": "modify", "_need_rerag": False}
+
         infer_location_from_area_or_room(extraction, session.draft)
         apply_extraction(session.draft, extraction, None)
         visit_time_text = extraction.get("visit_time_text")
         if visit_time_text:
             session.draft.visit_time = await llm.resolve_visit_time(visit_time_text, datetime.now())
-        return {"events": events, "_intent": "modify", "_extraction": extraction}
+
+        if description_changed or image_changed:
+            clear_rag_fields(session.draft)
+            return {"events": events, "_intent": "modify", "_need_rerag": True}
+
+        # 非 description/image 字段变更（如时间/楼层），跳过 RAG 直接重生成确认摘要
+        return {"events": events, "_intent": "modify", "_need_rerag": False}
     else:
         msg = "请问您需要修改哪一项？比如位置、时间或问题描述。"
         session.history.append({"role": "assistant", "content": msg})
         events.append({"type": "text_delta", "content": msg})
         events.append({"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()})
-        return {"events": events, "_intent": "unclear"}
+        return {"events": events, "_intent": "unclear", "_need_rerag": False}
 
 
 async def preview_edit(state: GraphState) -> dict:
@@ -269,7 +333,9 @@ async def preview_edit(state: GraphState) -> dict:
     user_message = state["user_message"]
     image_url = state["image_url"]
     events = []
-    extraction = await llm.extract_fields_editing(session.draft, user_message, image_url)
+    extraction = await llm.extract_fields_editing(
+        session.draft, user_message, image_url, session.pending_clarification
+    )
     logger.info("[PREVIEW_READY] LLM extraction result: %s", extraction)
     if extraction.get("_error"):
         msg = "系统繁忙，请稍后再试一次。"
@@ -284,6 +350,9 @@ async def preview_edit(state: GraphState) -> dict:
         events.append({"type": "text_delta", "content": image_description})
     if extraction.get("user_confirmed_description_priority"):
         session.user_confirmed_description_priority = True
+
+    session.pending_clarification = None
+
     description_changed = bool(extraction.get("description"))
     image_changed = image_url is not None
     new_area = extraction.get("area")
@@ -323,6 +392,10 @@ async def preview_edit(state: GraphState) -> dict:
         re_extraction = await llm.extract_fields_editing(session.draft, user_message, old_image)
         clarification = re_extraction.get("clarification_question")
         if clarification:
+            session.pending_clarification = {
+                "question": clarification,
+                "asked_in_state": session.state.value,
+            }
             session.history.append({"role": "assistant", "content": clarification})
             events.append({"type": "text_delta", "content": clarification})
             events.append({"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()})
@@ -354,4 +427,19 @@ def completed(state: GraphState) -> dict:
 
 
 def finalize(state: GraphState) -> dict:
-    return {"events": [{"type": "done"}]}
+    return {}
+
+
+async def re_confirm(state: GraphState) -> dict:
+    """modify 分支中非 description/image 字段变更后，跳过 RAG 直接重生成确认摘要。"""
+    session = state["session"]
+    events = []
+    session.state = AgentState.CONFIRMING
+    visit_time = session.draft.visit_time
+    reply_text = ""
+    async for chunk in llm.generate_confirmation_stream(session.draft, visit_time):
+        reply_text += chunk
+        events.append({"type": "text_delta", "content": chunk})
+    session.history.append({"role": "assistant", "content": reply_text})
+    events.append({"type": "state_update", "state": session.state.value, "collected": session.draft.to_dict()})
+    return {"events": events}

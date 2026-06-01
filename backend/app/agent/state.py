@@ -82,6 +82,7 @@ class Session:
     last_missing: list[str] = field(default_factory=list)  # 上一轮缺失字段列表
     image_description: str | None = None  # AI 对用户上传图片的故障描述
     user_confirmed_description_priority: bool = False  # 用户是否已确认"以描述为准"（跳过图文一致性检测）
+    pending_clarification: dict | None = None  # 上一轮 LLM 返回的澄清问题上下文 {"question": str, "asked_in_state": str}
     ticket: dict | None = None  # 生成的工单快照，提交时直接使用
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)  # 并发控制锁
 

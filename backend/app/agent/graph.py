@@ -24,6 +24,7 @@ def build_graph() -> StateGraph:
     graph.add_node(edges.NODE_WAIT_IMAGE, nodes.wait_image)
     graph.add_node(edges.NODE_RAG_CONFIRM, nodes.rag_and_confirm)
     graph.add_node(edges.NODE_CONFIRMING, nodes.confirming)
+    graph.add_node(edges.NODE_RE_CONFIRM, nodes.re_confirm)
     graph.add_node(edges.NODE_PREVIEW_EDIT, nodes.preview_edit)
     graph.add_node(edges.NODE_STREAM_REPLY, nodes.stream_reply)
     graph.add_node(edges.NODE_ESCALATED, nodes.escalated)
@@ -92,15 +93,19 @@ def build_graph() -> StateGraph:
     # rag_and_confirm → finalize
     graph.add_edge(edges.NODE_RAG_CONFIRM, edges.NODE_FINALIZE)
 
-    # confirming → confirmed/restart/modify
+    # confirming → confirmed/restart/unclear → finalize；modify → re_confirm 或 rag_confirm
     graph.add_conditional_edges(
         edges.NODE_CONFIRMING,
         edges.after_confirming,
         {
             edges.NODE_FINALIZE: edges.NODE_FINALIZE,
-            edges.NODE_COLLECT_EXTRACT: edges.NODE_COLLECT_EXTRACT,
+            edges.NODE_RAG_CONFIRM: edges.NODE_RAG_CONFIRM,
+            edges.NODE_RE_CONFIRM: edges.NODE_RE_CONFIRM,
         }
     )
+
+    # re_confirm → finalize
+    graph.add_edge(edges.NODE_RE_CONFIRM, edges.NODE_FINALIZE)
 
     # preview_edit → rerag 或 finalize
     graph.add_conditional_edges(

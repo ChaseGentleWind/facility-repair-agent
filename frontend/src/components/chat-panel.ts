@@ -105,6 +105,8 @@ export class ChatPanel extends LitElement {
     COLLECTING: '正在收集报修信息...',
     WAITING_IMAGE: '等待上传现场照片',
     CONFIRMING: '请确认报修信息',
+    PREVIEW_READY: '预览已就绪，请提交或继续修改',
+    SUBMITTED: '工单已提交',
     COMPLETED: '工单已生成',
     ESCALATED: '已转接人工服务',
   }
