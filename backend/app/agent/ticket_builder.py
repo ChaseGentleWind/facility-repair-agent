@@ -5,6 +5,16 @@ import threading
 
 from app.agent.state import Session
 
+# code → 规范显示名，消除 ChromaDB 历史数据中同一 code 多种写法的问题
+_FAULT_TYPE_CANONICAL: dict[str, str] = {
+    "100": "空调报修类",
+    "200": "电气报修类",
+    "300": "给排水报修类",
+    "400": "土木工报修类",
+    "500": "公共设备设施报修类",
+    "J00": "公寓维修类",
+}
+
 # 模块级维修单号计数器，重启后重置
 _repair_no_counter = 1726198
 _counter_lock = threading.Lock()  # 保护计数器的线程锁
@@ -22,7 +32,7 @@ def build_ticket(session: Session) -> dict:
     ticket_id = str(random.randint(10**16, 10**17 - 1))
 
     ft_code = draft.fault_type_code or "000"
-    ft_name = draft.fault_type_name or "待分类"
+    ft_name = _FAULT_TYPE_CANONICAL.get(ft_code, draft.fault_type_name or "待分类")
     priority = draft.repair_priority_rag or "MEDIUM"
     problem_description = draft.normalized_description or draft.description or ""
 

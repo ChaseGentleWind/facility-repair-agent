@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
-from app.agent import core as agent_core
+from app.agent import graph as agent_graph
 from app.agent.prompts import GREETING_TEXT
 from app.agent.state import create_session, get_session, refresh_session
 from app.config import settings
@@ -54,7 +54,7 @@ async def chat_message(req: MessageRequest):
         try:
             async with session._lock:
                 # 持锁期间独占 session，串行处理消息
-                async for event in agent_core.process_message(session, user_text, image_url):
+                async for event in agent_graph.process_message(session, user_text, image_url):
                     yield {"data": json.dumps(event, ensure_ascii=False)}
         except Exception as exc:
             logger.exception("SSE generator error: %s", exc)
