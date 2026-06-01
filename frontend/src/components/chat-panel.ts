@@ -99,6 +99,8 @@ export class ChatPanel extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false
   @property({ reflect: true }) position: 'bottom-right' | 'bottom-left' = 'bottom-right'
   @property({ attribute: false, hasChanged: () => true }) store!: ChatStore
+  @property({ type: String }) asrWsUrl = ''
+  @property({ type: String }) asrHealthUrl = ''
 
   private _stateLabels: Record<string, string> = {
     GREETING: '等待您的描述',
@@ -131,6 +133,8 @@ export class ChatPanel extends LitElement {
       ></message-list>
       <input-bar
         ?disabled=${st.isStreaming}
+        asr-ws-url=${this.asrWsUrl}
+        asr-health-url=${this.asrHealthUrl}
         @send-text=${this._onSendText}
         @send-image=${this._onSendImage}
       ></input-bar>

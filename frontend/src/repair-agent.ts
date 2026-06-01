@@ -76,6 +76,8 @@ export class RepairAgent extends LitElement {
       <chat-panel
         ?open=${st.isPanelOpen}
         position=${this._config.position}
+        asr-ws-url=${this._config.asrWsUrl}
+        asr-health-url=${this._config.asrHealthUrl}
         .store=${st}
         @panel-close=${() => st.closePanel()}
       ></chat-panel>
