@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import random
-import threading
 
 from app.agent.state import Session
+from app.services.ticket_counter import get_ticket_counter
 
 # code → 规范显示名，消除 ChromaDB 历史数据中同一 code 多种写法的问题
 _FAULT_TYPE_CANONICAL: dict[str, str] = {
@@ -15,18 +15,11 @@ _FAULT_TYPE_CANONICAL: dict[str, str] = {
     "J00": "公寓维修类",
 }
 
-# 模块级维修单号计数器，重启后重置
-_repair_no_counter = 1726198
-_counter_lock = threading.Lock()  # 保护计数器的线程锁
 
-
-def build_ticket(session: Session) -> dict:
-    global _repair_no_counter
-
-    # 使用线程锁保护计数器，避免并发时重复
-    with _counter_lock:
-        repair_no = _repair_no_counter
-        _repair_no_counter += 1
+async def build_ticket(session: Session) -> dict:
+    """构建工单 JSON（异步获取全局唯一 repair_no）"""
+    counter = get_ticket_counter()
+    repair_no = await counter.next()
 
     draft = session.draft
     ticket_id = str(random.randint(10**16, 10**17 - 1))

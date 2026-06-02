@@ -52,6 +52,7 @@ class TicketDraft:
         return missing
 
     def to_dict(self) -> dict:
+        """用于展示的简化字典（给 LLM 和前端）"""
         d = {
             "description": self.description,
             "estate": self.estate,
@@ -67,6 +68,43 @@ class TicketDraft:
         if self.repair_priority_rag:
             d["priority"] = self.repair_priority_rag
         return d
+
+    def serialize(self) -> dict:
+        """完整序列化（用于持久化存储）"""
+        return {
+            "description": self.description,
+            "estate": self.estate,
+            "building": self.building,
+            "floor": self.floor,
+            "area": self.area,
+            "room": self.room,
+            "visit_time": self.visit_time,
+            "image_urls": self.image_urls,
+            "normalized_description": self.normalized_description,
+            "fault_type_code": self.fault_type_code,
+            "fault_type_name": self.fault_type_name,
+            "repair_priority_rag": self.repair_priority_rag,
+            "repair_type": self.repair_type,
+        }
+
+    @classmethod
+    def deserialize(cls, data: dict) -> TicketDraft:
+        """从字典恢复 TicketDraft 实例"""
+        return cls(
+            description=data.get("description"),
+            estate=data.get("estate"),
+            building=data.get("building"),
+            floor=data.get("floor"),
+            area=data.get("area"),
+            room=data.get("room"),
+            visit_time=data.get("visit_time"),
+            image_urls=data.get("image_urls", []),
+            normalized_description=data.get("normalized_description"),
+            fault_type_code=data.get("fault_type_code"),
+            fault_type_name=data.get("fault_type_name"),
+            repair_priority_rag=data.get("repair_priority_rag"),
+            repair_type=data.get("repair_type"),
+        )
 
 
 @dataclass
@@ -86,36 +124,44 @@ class Session:
     ticket: dict | None = None  # 生成的工单快照，提交时直接使用
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)  # 并发控制锁
 
+    def serialize(self) -> dict:
+        """完整序列化（用于持久化存储）"""
+        return {
+            "session_id": self.session_id,
+            "client_id": self.client_id,
+            "state": self.state.value,
+            "history": self.history,
+            "draft": self.draft.serialize(),
+            "created_at": self.created_at.isoformat(),
+            "expires_at": self.expires_at.isoformat(),
+            "stall_count": self.stall_count,
+            "last_missing": self.last_missing,
+            "image_description": self.image_description,
+            "user_confirmed_description_priority": self.user_confirmed_description_priority,
+            "pending_clarification": self.pending_clarification,
+            "ticket": self.ticket,
+        }
 
-# ── 内存会话存储 ──────────────────────────────────────────────────────────────
-
-_store: dict[str, Session] = {}
-
-
-def create_session(client_id: str) -> Session:
-    now = datetime.now()
-    session = Session(
-        session_id=f"sess_{uuid.uuid4().hex[:12]}",
-        client_id=client_id,
-        state=AgentState.GREETING,
-        history=[],
-        draft=TicketDraft(),
-        created_at=now,
-        expires_at=now + timedelta(seconds=settings.session_ttl_seconds),
-    )
-    _store[session.session_id] = session
-    return session
-
-
-def get_session(session_id: str) -> Session | None:
-    session = _store.get(session_id)
-    if session is None:
-        return None
-    if session.expires_at < datetime.now():
-        _store.pop(session_id, None)  # 使用 pop 避免并发删除时的 KeyError
-        return None
-    return session
+    @classmethod
+    def deserialize(cls, data: dict) -> Session:
+        """从字典恢复 Session 实例"""
+        return cls(
+            session_id=data["session_id"],
+            client_id=data["client_id"],
+            state=AgentState(data["state"]),
+            history=data.get("history", []),
+            draft=TicketDraft.deserialize(data.get("draft", {})),
+            created_at=datetime.fromisoformat(data["created_at"]),
+            expires_at=datetime.fromisoformat(data["expires_at"]),
+            stall_count=data.get("stall_count", 0),
+            last_missing=data.get("last_missing", []),
+            image_description=data.get("image_description"),
+            user_confirmed_description_priority=data.get("user_confirmed_description_priority", False),
+            pending_clarification=data.get("pending_clarification"),
+            ticket=data.get("ticket"),
+        )
 
 
-def refresh_session(session: Session) -> None:
-    session.expires_at = datetime.now() + timedelta(seconds=settings.session_ttl_seconds)
+# ── 会话存储函数已迁移至 app.services.session_store ──────────────────────────
+# create_session / get_session / refresh_session 现在是异步函数，导入自：
+# from app.services.session_store import create_session, get_session, refresh_session

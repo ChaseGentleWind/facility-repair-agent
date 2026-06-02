@@ -39,10 +39,35 @@ async def lifespan(app: FastAPI):
         logger.error("❌ RAG 模型预热失败: %s", e)
         logger.warning("⚠️  服务将继续启动，但 RAG 功能可能不可用")
 
+    # 初始化持久化后端
+    logger.info("📦 初始化存储后端: %s", settings.storage_backend)
+    from app.services.session_store import init_session_store
+    from app.services.ticket_counter import init_ticket_counter
+
+    redis_client = None
+    if settings.storage_backend == "redis":
+        from redis.asyncio import from_url
+        redis_client = from_url(settings.redis_url, decode_responses=True)
+        logger.info("✅ Redis 客户端已创建")
+
+    init_session_store(
+        backend=settings.storage_backend,
+        redis_client=redis_client,
+    )
+    init_ticket_counter(
+        backend=settings.storage_backend,
+        redis_client=redis_client,
+        seed=settings.repair_no_seed,
+    )
+    logger.info("✅ 存储后端初始化完成")
+
     yield  # 应用运行期间
 
-    # 关闭时清理资源（可选）
+    # 关闭时清理资源
     logger.info("🛑 应用关闭，清理资源...")
+    if redis_client:
+        await redis_client.aclose()
+        logger.info("✅ Redis 连接已关闭")
 
 
 def create_app() -> FastAPI:
