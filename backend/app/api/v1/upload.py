@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.agent.state import get_session, refresh_session
+from app.services.session_store import get_session, refresh_session, get_session_store
 from app.models.api_models import UploadResponse
 from app.services.storage import ALLOWED_CONTENT_TYPES, MAX_FILE_SIZE, upload_image
 
@@ -18,11 +18,11 @@ async def upload_image_endpoint(
     session_id: str = Form(...),
     file: UploadFile = File(...),
 ) -> UploadResponse:
-    session = get_session(session_id)
+    session = await get_session(session_id)
     if session is None:
         raise HTTPException(status_code=400, detail="session_id 无效或已过期")
 
-    refresh_session(session)
+    await refresh_session(session)
 
     content_type = file.content_type or "image/jpeg"
     if content_type == "image/jpg":

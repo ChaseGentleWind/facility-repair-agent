@@ -245,7 +245,7 @@ async def confirming(state: GraphState) -> dict:
     events = []
     confirmed = await llm.check_user_confirmed(user_message)
     if confirmed:
-        ticket = build_ticket(session)
+        ticket = await build_ticket(session)
         session.ticket = ticket
         session.state = AgentState.PREVIEW_READY
         logger.info("ticket_ready: session=%s ticket_id=%s", session.session_id, ticket.get("ticket_id"))
@@ -403,7 +403,7 @@ async def preview_edit(state: GraphState) -> dict:
     if description_changed or image_changed:
         clear_rag_fields(session.draft)
         return {"events": events, "_need_rerag": True}
-    ticket = build_ticket(session)
+    ticket = await build_ticket(session)
     session.ticket = ticket
     events.append({"type": "ticket_ready", "ticket": ticket})
     events.append({"type": "text_delta", "content": "已更新预览，请确认或继续修改。"})

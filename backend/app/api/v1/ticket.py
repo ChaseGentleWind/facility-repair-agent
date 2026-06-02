@@ -4,7 +4,8 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from app.agent.state import AgentState, get_session
+from app.agent.state import AgentState
+from app.services.session_store import get_session, get_session_store
 from app.models.api_models import SubmitTicketRequest, SubmitTicketResponse
 
 router = APIRouter(prefix="/ticket", tags=["ticket"])
@@ -13,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 @router.post("/submit", response_model=SubmitTicketResponse)
 async def submit_ticket(req: SubmitTicketRequest) -> SubmitTicketResponse:
-    session = get_session(req.session_id)
+    store = get_session_store()
+    session = await get_session(req.session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在或已过期")
 
@@ -35,6 +37,7 @@ async def submit_ticket(req: SubmitTicketRequest) -> SubmitTicketResponse:
     logger.info("工单已提交: session=%s ticket_id=%s", session.session_id, session.ticket["ticket_id"])
 
     session.state = AgentState.SUBMITTED
+    await store.save(session)
 
     return SubmitTicketResponse(
         success=True,

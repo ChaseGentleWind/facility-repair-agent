@@ -27,6 +27,14 @@ class Settings(BaseSettings):
 
     allowed_origins: str = "*"
 
+    # 持久化配置
+    storage_backend: str = "memory"  # "memory" | "redis"
+    redis_url: str = "redis://localhost:6379/0"
+    redis_session_prefix: str = "frap:session:"
+    redis_lock_prefix: str = "frap:lock:"
+    redis_lock_ttl_seconds: int = 60
+    repair_no_seed: int = 1726198
+
     @property
     def origins_list(self) -> list[str]:
         if self.allowed_origins == "*":

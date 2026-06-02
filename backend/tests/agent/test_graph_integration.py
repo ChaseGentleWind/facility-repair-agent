@@ -5,13 +5,20 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from app.agent.graph import process_message
-from app.agent.state import AgentState, create_session
+from app.agent.state import AgentState, Session, TicketDraft
+from app.services.session_store import init_session_store, create_session
+
+
+@pytest.fixture(autouse=True)
+def setup_memory_store():
+    """每个测试前初始化内存存储后端"""
+    init_session_store(backend="memory")
 
 
 @pytest.mark.asyncio
 async def test_graph_basic_flow():
     """测试基本流程：entry → collect_extract → collect_decide → stream_reply"""
-    session = create_session(client_id="test_client")
+    session = await create_session(client_id="test_client")
 
     # Mock LLM 返回提取结果
     mock_extraction = {
@@ -48,7 +55,7 @@ async def test_graph_basic_flow():
 @pytest.mark.asyncio
 async def test_needs_human_flow():
     """测试转人工流程"""
-    session = create_session(client_id="test_client")
+    session = await create_session(client_id="test_client")
 
     mock_extraction = {
         "needs_human": True,
@@ -68,7 +75,7 @@ async def test_needs_human_flow():
 @pytest.mark.asyncio
 async def test_image_skip_flow():
     """测试跳过图片流程"""
-    session = create_session(client_id="test_client")
+    session = await create_session(client_id="test_client")
     session.state = AgentState.WAITING_IMAGE
     session.draft.description = "水龙头漏水"
     session.draft.estate = "园区A"
