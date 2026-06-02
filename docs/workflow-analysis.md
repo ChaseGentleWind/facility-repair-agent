@@ -9,14 +9,79 @@
 FastAPI 后端（/chat/init、/chat/message、/upload/image、/ticket/submit）
         │
         ▼
-Agent 状态机（core.py）
-    ├─ LLM 调用（services/llm.py → Qwen3.5-omni-flash）
+LangGraph Agent（graph.py → compiled_graph）
+    ├─ 13 个节点（nodes.py）
+    ├─ 条件路由（edges.py）
+    ├─ LLM 调用（services/llm.py → Qwen3 via DashScope）
     └─ RAG 检索（services/rag.py → ChromaDB + BAAI/bge-large-zh-v1.5）
 ```
 
 ---
 
-## 二、核心状态机
+## 二、LangGraph 图结构
+
+### 节点清单
+
+| 节点 | 职责 |
+|------|------|
+| `entry_router` | 写入 history，GREETING→COLLECTING 转换，按 session.state 分派 |
+| `collect_extract` | LLM 字段提取，检测 needs_human / clarification / missing |
+| `collect_decide` | stall_count 检测，超限转 ESCALATED |
+| `stream_reply` | 流式生成缺失字段追问 |
+| `ask_image` | 发送请求图片上传提示 |
+| `wait_image` | 处理图片输入或跳过指令 |
+| `rag_and_confirm` | RAG 检索 + 流式生成确认摘要 |
+| `confirming` | 三路意图分类（confirmed / restart / modify） |
+| `preview_edit` | PREVIEW_READY 状态下字段编辑 |
+| `escalated` | 发送转人工事件，设置 ESCALATED 状态 |
+| `submitted` | 发送已提交提示 |
+| `completed` | 发送已完成提示 |
+| `finalize` | 发送 `done` 事件，结束图执行 |
+
+### 图拓扑
+
+```
+entry_router
+    ├─ COLLECTING → collect_extract
+    │   ├─ _error ──────────────────────────────► finalize
+    │   ├─ needs_human ──► escalated ───────────► finalize
+    │   ├─ clarification ───────────────────────► finalize
+    │   ├─ missing → collect_decide
+    │   │   ├─ stalled ──► escalated ───────────► finalize
+    │   │   └─ normal ──► stream_reply ─────────► finalize
+    │   ├─ no_image ──► ask_image ──────────────► finalize
+    │   └─ complete ──► rag_and_confirm ─────────► finalize
+    ├─ WAITING_IMAGE → wait_image
+    │   ├─ proceed ──► rag_and_confirm ──────────► finalize
+    │   └─ retry ────────────────────────────────► finalize
+    ├─ CONFIRMING → confirming
+    │   ├─ confirmed ────────────────────────────► finalize
+    │   └─ restart/modify ──► collect_extract（循环）
+    ├─ PREVIEW_READY → preview_edit
+    │   ├─ need_rerag ──► rag_and_confirm ───────► finalize
+    │   └─ no_rerag ─────────────────────────────► finalize
+    ├─ ESCALATED → escalated ────────────────────► finalize
+    ├─ SUBMITTED → submitted ────────────────────► finalize
+    └─ COMPLETED → completed ────────────────────► finalize
+```
+
+### GraphState 字段
+
+```python
+class GraphState(TypedDict):
+    session: Session          # 会话对象，节点直接修改
+    user_message: str         # 本轮用户输入
+    image_url: str | None     # 本轮图片 URL
+    events: Annotated[list[dict], operator.add]  # SSE 事件累积
+    _extraction: dict         # collect_extract 提取结果
+    _proceed_to_rag: bool     # wait_image 后是否进入 RAG
+    _intent: str              # confirming 后意图
+    _need_rerag: bool         # preview_edit 后是否重新 RAG
+```
+
+---
+
+## 三、Session 状态机
 
 ```
 GREETING → COLLECTING → WAITING_IMAGE → CONFIRMING → PREVIEW_READY → SUBMITTED
@@ -31,12 +96,12 @@ GREETING → COLLECTING → WAITING_IMAGE → CONFIRMING → PREVIEW_READY → S
 
 ---
 
-## 三、完整工作流
+## 四、完整工作流
 
 ### 1. 会话初始化
 `POST /chat/init` → 生成 session_id → state = GREETING → 返回欢迎语
 
-### 2. COLLECTING 阶段
+### 2. COLLECTING 阶段（collect_extract → collect_decide / stream_reply）
 
 **字段提取**（单次 VLM 调用）：
 ```python
@@ -55,30 +120,32 @@ extraction = await llm.extract_fields(draft, user_message, image_url)
 - 模糊词（"随便"、"尽快"）→ now+30min
 - 自然语言（"下午三点"、"一小时后"）→ LLM 解析为 "M月D日 H时mm分"
 
-**意图路由**：
+**意图路由**（edges.after_collect_extract）：
 ```
-needs_human=true → ESCALATED
-_error → 提示"系统繁忙"，维持当前状态
-clarification_question → 输出问题，维持 COLLECTING
-missing_required() → 流式生成追问（最近 10 条 history）
-无缺失+无图片 → WAITING_IMAGE
-无缺失+有图片 → RAG 检索 + 确认摘要
+_error → finalize（提示"系统繁忙"）
+needs_human → escalated
+clarification_question → finalize（输出问题）
+missing_required() → collect_decide
+  stall_count 超限 → escalated
+  正常 → stream_reply → finalize
+无缺失 + 无图片 → ask_image → finalize
+无缺失 + 有图片 → rag_and_confirm → finalize
 ```
 
-### 3. WAITING_IMAGE 阶段
-- 收到图片 → 提取字段 → RAG 检索
-- 用户跳过（关键词：跳过/不用/没有/算了/skip）→ RAG 检索
-- 其他 → 继续等待
+### 3. WAITING_IMAGE 阶段（wait_image）
+- 收到图片 → 提取字段 → `_proceed_to_rag=True` → rag_and_confirm
+- 用户跳过（关键词：跳过/不用/没有/算了/skip）→ `_proceed_to_rag=True` → rag_and_confirm
+- 其他 → finalize（继续等待）
 
-### 4. RAG 检索 + 确认摘要
+### 4. RAG 检索 + 确认摘要（rag_and_confirm）
 
-**RAG 流程**（`_run_rag_and_confirm()`）：
+**RAG 流程**：
 ```
 用户描述 + 图片（可选）
     ↓
 图文语义冲突检测（LLM 判断）
-    ├─ 冲突（如"灯坏了" vs "墙面水渍"）→ 只用描述
-    └─ 互补（如"处理一下" + "挂钟放桌上"）→ 拼接增强
+    ├─ 冲突（不同故障类型）→ 只用描述
+    └─ 互补（同一故障不同方面）→ 拼接增强
     ↓
 标准化描述（剔除位置信息）
     ↓
@@ -102,31 +169,30 @@ score ≥ 0.30 → 填充 fault_type_code/name、repair_priority_rag、repair_ty
 以上信息是否正确？确认后我将为您提交报修单。
 ```
 
-**状态切换**：COLLECTING → CONFIRMING
+**状态切换**：COLLECTING / WAITING_IMAGE → CONFIRMING
 
-### 5. CONFIRMING 阶段
+### 5. CONFIRMING 阶段（confirming）
 
 **确认判断**（三层逻辑）：
 1. 关键词快速路径：否定词（不/错/改）→ False，肯定词（好/是/确认）→ True
 2. LLM fallback（边界情况）：max_tokens=10, temperature=0
 3. 失败兜底：False
 
-**结果路由**：
-- confirmed=True → build_ticket() → state=PREVIEW_READY → yield `ticket_ready`
-- confirmed=False → classify_denial_intent() 判断意图：
-  - modify：回到 COLLECTING，用 `extract_fields_editing` 提取修改字段
-  - restart：清空 draft，回到 COLLECTING
-  - unclear：追问用户想修改什么
+**结果路由**（edges.after_confirming）：
+- `_intent=confirmed` → finalize（build_ticket → state=PREVIEW_READY → yield `ticket_ready`）
+- `_intent=modify` → collect_extract（用 `extract_fields_editing` 提取修改字段）
+- `_intent=restart` → collect_extract（清空 draft，重新收集）
+- `_intent=unclear` → finalize（追问用户）
 
-### 6. PREVIEW_READY 阶段
+### 6. PREVIEW_READY 阶段（preview_edit）
 
 工单预览已生成，等待用户操作：
-- 用户修改字段 → `extract_fields_editing` 提取 → 重新 RAG + 确认 → 回到 CONFIRMING
+- 用户修改字段 → `extract_fields_editing` 提取 → `_need_rerag=True` → rag_and_confirm → CONFIRMING
 - 前端调用 `POST /ticket/submit` → state=SUBMITTED
 
 ---
 
-## 四、LLM 调用汇总
+## 五、LLM 调用汇总
 
 | 调用位置 | 模式 | temperature | 用途 |
 |----------|------|-------------|------|
@@ -140,38 +206,36 @@ score ≥ 0.30 → 填充 fault_type_code/name、repair_priority_rag、repair_ty
 | `_check_semantic_conflict` | 非流式 | 0 | 图文语义冲突检测 |
 | `_describe_image_fault` | 非流式 VLM | 0.1 | 图片故障描述（RAG 增强） |
 
-**错误处理**：所有 LLM 调用失败返回 `{"_error": "llm_call_failed"}`，调用方检测后提示用户"系统繁忙"并维持当前状态。
+**错误处理**：所有 LLM 调用失败返回 `{"_error": "llm_call_failed"}`，节点检测后提示"系统繁忙"并维持当前状态。
 
 ---
 
-## 五、关键设计决策
+## 六、关键设计决策
 
-### 5.1 图文语义冲突自动检测
+### 6.1 LangGraph 替代手写状态机
+图结构使节点职责单一、路由逻辑集中在 edges.py，便于独立测试和扩展。不使用 Checkpointer——Session 状态由外部内存字典管理，图仅处理单次消息。
 
+### 6.2 图文语义冲突自动检测
 RAG 检索前调用 LLM 判断图文是否冲突：
 - **冲突**（不同故障类型）→ 只用用户描述
 - **互补**（同一故障不同方面）→ 拼接增强
 - 用户明确"以我的为准" → 跳过图片（`ignore_image=true`）
 
-### 5.2 单次 VLM 调用合并图片描述 + 字段提取
-
+### 6.3 单次 VLM 调用合并图片描述 + 字段提取
 有图片时一次调用同时生成描述和提取字段，延迟减半、一致性保证。
 
-### 5.3 显式状态机 vs 单一 LLM 决策
+### 6.4 LLM 失败降级
+所有 LLM 调用失败时返回带 `_error` 标记的 sentinel dict，节点检测后向用户提示"系统繁忙"并保持当前状态不变。
 
-流程由代码决定，不依赖 LLM 理解"下一步该做什么"。每轮只调用必要的 LLM，`session.state` 是明确的断点。
+### 6.5 History 窗口限制
+`generate_reply_stream` 只传最近 10 条 history，避免 token 浪费。`generate_confirmation_stream` 完全不依赖 history，纯基于 draft 生成摘要。
 
-### 5.4 LLM 失败降级
-
-所有 LLM 调用失败时返回带 `_error` 标记的 sentinel dict，状态机检测后向用户提示"系统繁忙"并保持当前状态不变，避免静默丢失信息。
-
-### 5.5 History 窗口限制
-
-`generate_reply_stream` 只传最近 10 条 history，避免 token 浪费和幻觉。`generate_confirmation_stream` 完全不依赖 history，纯基于 draft 生成摘要。
+### 6.6 系统代理绕过
+openai SDK（httpx）默认读取 Windows 注册表系统代理。若代理不可用会导致 502 连接失败。在 `services/llm.py` 中传入 `httpx.AsyncClient(trust_env=False)` 可强制直连 DashScope。
 
 ---
 
-## 六、前端 SSE 事件
+## 七、前端 SSE 事件
 
 | 事件类型 | 前端动作 |
 |----------|----------|
@@ -184,7 +248,7 @@ RAG 检索前调用 LLM 判断图文是否冲突：
 
 ---
 
-## 七、状态迁移图
+## 八、状态迁移图
 
 ```
                     ┌─────────────────────────────┐
@@ -203,3 +267,19 @@ GREETING ──► COLLECTING ──► WAITING_IMAGE
                       │  ▲              │
                       │  └──────────────┘
 ```
+
+---
+
+## 九、启动说明
+
+```bash
+# 后端（避免 data/uploads/ 触发热重载）
+cd backend
+uvicorn app.main:app --host 0.0.0.0 --port 8500 --reload --reload-dir app
+
+# 前端
+cd frontend
+npm run dev
+```
+
+等待日志出现 `🎉 RAG 模型预热完成，服务已就绪` 后再发送请求。

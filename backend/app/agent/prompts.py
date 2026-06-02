@@ -111,6 +111,13 @@ EXTRACTION_SYSTEM = """\
   用户："找人挂牌子" → needs_human=false, description="挂牌子"
   用户："找人来修" → needs_human=false（正常报修需求）
 
+用户确认意图识别：
+若用户消息包含以下表述，设置 user_confirmed_description_priority=true：
+  - "以我的为准"、"以我的描述为准"、"以描述为准"
+  - "不用换照片"、"不换照片"、"照片不用管"
+  - "就按我说的"、"按我说的来"
+否则 user_confirmed_description_priority=false
+
 未提及或不确定的字段返回 null。严格按以下 JSON Schema 输出：
 {
   "image_description_text": string | null,  // 仅当有图片时生成，无图片时为 null
@@ -127,11 +134,21 @@ EXTRACTION_SYSTEM = """\
 }"""
 
 
-def extraction_user_prompt(draft_json: str, user_message: str, image_url: str | None) -> str:
+def extraction_user_prompt(
+    draft_json: str,
+    user_message: str,
+    image_url: str | None,
+    pending_clarification: dict | None = None,
+) -> str:
     lines = [
         f"当前已知信息：{draft_json}",
         f"用户本轮消息：{user_message}",
     ]
+    if pending_clarification:
+        lines.append(
+            f"上一轮系统提问（澄清问题）：{pending_clarification['question']}\n"
+            "请结合上一轮问题理解用户本轮回答，将答案填入对应字段。"
+        )
     if image_url:
         lines.append("用户上传了一张现场照片（见图片），请先生成 image_description_text，再提取结构化字段。")
     return "\n".join(lines)
@@ -244,7 +261,12 @@ CONFIRM_CHECK_SYSTEM = """\
 
 # ── EDITING 阶段：修改意图判断 Prompt（非流式，JSON输出）────────────────────
 
-def editing_extract_prompt(draft_json: str, user_message: str, image_url: str | None) -> str:
+def editing_extract_prompt(
+    draft_json: str,
+    user_message: str,
+    image_url: str | None,
+    pending_clarification: dict | None = None,
+) -> str:
     """EDITING 阶段的提取 prompt，与 COLLECTING 共用 EXTRACTION_SYSTEM，但明确当前是修改场景。"""
     lines = [
         f"当前工单信息（用户正在修改）：{draft_json}",
@@ -253,6 +275,11 @@ def editing_extract_prompt(draft_json: str, user_message: str, image_url: str | 
         "⚠️ 特别注意：如果用户只提到了 area（如'2-L28'、'8-2401'）或 room（如'803'、'2103'），但没有明确提到楼栋/楼层，building 与 floor 字段必须返回 null（保留原值），由系统自动推断。",
         "⚠️ area 与 room 互斥：含'-'的复合编号一律归 area，不要拆分到 room；纯房号归 room。",
     ]
+    if pending_clarification:
+        lines.append(
+            f"上一轮系统提问（澄清问题）：{pending_clarification['question']}\n"
+            "请结合上一轮问题理解用户本轮回答，将答案填入对应字段。"
+        )
     if image_url:
         lines.append("用户上传了新的现场照片（见图片），请先生成 image_description_text，再提取结构化字段。")
         consistency_check = (
@@ -262,7 +289,6 @@ def editing_extract_prompt(draft_json: str, user_message: str, image_url: str | 
         )
         lines.append(consistency_check)
 
-    # 新增：识别用户确认意图
     lines.append(
         "\n⚠️ 用户确认意图识别：若用户消息包含以下表述，设置 user_confirmed_description_priority=true："
         "\n  - '以我的为准'、'以我的描述为准'、'以描述为准'"

@@ -86,6 +86,7 @@ async def extract_fields(
     draft: TicketDraft,
     user_message: str,
     image_url: str | None = None,
+    pending_clarification: dict | None = None,
 ) -> dict:
     """非流式调用，返回提取到的字段 dict（含 image_description_text）。有图片时使用多模态消息格式。
 
@@ -93,6 +94,7 @@ async def extract_fields(
         draft: 当前工单草稿
         user_message: 用户消息
         image_url: 图片 URL（可选）
+        pending_clarification: 上一轮澄清问题上下文（可选）
 
     Returns:
         dict: 包含 image_description_text（有图片时）和其他字段
@@ -101,6 +103,7 @@ async def extract_fields(
         json.dumps(draft.to_dict(), ensure_ascii=False),
         user_message,
         image_url,
+        pending_clarification,
     )
     user_msg = _build_user_message(user_text, image_url)
     try:
@@ -124,12 +127,14 @@ async def extract_fields_editing(
     draft: TicketDraft,
     user_message: str,
     image_url: str | None = None,
+    pending_clarification: dict | None = None,
 ) -> dict:
     """EDITING 阶段专用提取：明确告知 LLM 当前是修改场景，未提及字段返回 null。"""
     user_text = editing_extract_prompt(
         json.dumps(draft.to_dict(), ensure_ascii=False),
         user_message,
         image_url,
+        pending_clarification,
     )
     user_msg = _build_user_message(user_text, image_url)
     try:

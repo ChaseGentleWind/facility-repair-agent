@@ -16,6 +16,8 @@ dependencies = [
     "minio>=7.2.0",
     "aiofiles>=23.0.0",
     "python-multipart>=0.0.9",
+    "langgraph>=0.2.50",
+    "langchain-core>=0.3.0",
 ]
 
 [tool.uv]
