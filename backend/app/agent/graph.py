@@ -8,6 +8,7 @@ from langgraph.graph import StateGraph, END
 from app.agent import edges, nodes
 from app.agent.graph_state import GraphState
 from app.agent.state import Session
+from app.services import llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,7 @@ async def process_message(
     兼容包装函数，保持与旧 agent/core.py 相同的签名。
     供 api/v1/chat.py 调用。
     """
+    counter = llm_client.reset_counter()
     try:
         input_state = {
             "session": session,
@@ -157,5 +159,12 @@ async def process_message(
     except Exception as exc:
         logger.exception("process_message error: %s", exc)
         yield {"type": "error", "code": "INTERNAL_ERROR", "message": "服务异常，请稍后重试"}
+
+    finally:
+        if counter:
+            logger.info(
+                "[llm_calls] session=%s total=%d detail=%s",
+                session.session_id, sum(counter.values()), dict(counter),
+            )
 
     yield {"type": "done"}

@@ -12,7 +12,8 @@ export class ChatStore {
   sessionId: string | null = null
   messages: ChatMessage[] = []
   agentState: AgentState = 'GREETING'
-  collectedFields: Record<string, string> = {}
+  collectedFields: Record<string, any> = {}
+  currentTicket: Record<string, unknown> | null = null
   isStreaming = false
   isPanelOpen = false
   unreadCount = 0
@@ -198,7 +199,9 @@ export class ChatStore {
     }
 
     if (!botMsg.content.trim()) {
-      botMsg.content = '抱歉，响应异常，请重试。'
+      if (botMsg.type !== 'confirm_card') {
+        botMsg.content = '抱歉，响应异常，请重试。'
+      }
     }
 
     this.isStreaming = false
@@ -216,7 +219,7 @@ export class ChatStore {
       case 'state_update':
         if (evt.state) {
           this.agentState = evt.state
-          if (evt.state === 'CONFIRMING' && this._lastUploadedImageUrl) {
+          if (evt.state === 'CONFIRMING' && this._lastUploadedImageUrl && botMsg.type !== 'confirm_card') {
             // 必须替换对象引用，Lit 才能检测到 .msg 变化并重新渲染 bubble
             const idx = this.messages.indexOf(botMsg)
             if (idx >= 0) {
@@ -230,8 +233,24 @@ export class ChatStore {
         this._notify()
         break
 
+      case 'draft_confirm':
+        if (evt.draft) {
+          const idx = this.messages.indexOf(botMsg)
+          const updated: ChatMessage = {
+            ...botMsg,
+            type: 'confirm_card',
+            content: '',
+            draftConfirm: evt.draft,
+          }
+          if (idx >= 0) this.messages[idx] = updated
+          Object.assign(botMsg, updated)
+        }
+        this._notify()
+        break
+
       case 'ticket_ready':
         if (evt.ticket) {
+          this.currentTicket = evt.ticket
           console.log('[repair-agent] ticket_ready received, dispatching event', evt.ticket)
           this._dispatchEvent('onRepairTicketGenerated', evt.ticket)
         }
@@ -271,6 +290,22 @@ export class ChatStore {
     this._hostElement?.dispatchEvent(
       new CustomEvent(name, { bubbles: true, composed: true, detail }),
     )
+  }
+
+  promptDraftModification() {
+    if (this.isStreaming) return
+    this.messages.push({
+      role: 'bot',
+      type: 'text',
+      content: '请告诉我需要修改的位置、问题或上门时间。',
+      timestamp: Date.now(),
+    })
+    this._notify()
+  }
+
+  async generateDraftPreview() {
+    if (!this.sessionId || this.isStreaming) return
+    await this._streamAgentReply('text', '生成预览')
   }
 
   async submitTicket() {
@@ -313,6 +348,7 @@ export class ChatStore {
     this.messages = []
     this.agentState = 'GREETING'
     this.collectedFields = {}
+    this.currentTicket = null
     this.isStreaming = false
     this.unreadCount = 0
     this._lastUploadedImageUrl = null

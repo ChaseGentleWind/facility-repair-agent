@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     redis_lock_ttl_seconds: int = 60
     repair_no_seed: int = 1726198
 
+    # LLM 调用治理
+    llm_timeout_seconds: float = 15.0
+    llm_max_retries: int = 3
+
     @property
     def origins_list(self) -> list[str]:
         if self.allowed_origins == "*":

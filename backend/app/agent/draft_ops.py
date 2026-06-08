@@ -3,12 +3,16 @@ from __future__ import annotations
 import logging
 import re
 
+from app.agent.schemas import ImageAnalysis, TextExtraction
 from app.agent.state import TicketDraft
 
 logger = logging.getLogger(__name__)
 
 
-def infer_location_from_area_or_room(extraction: dict, draft: TicketDraft) -> None:
+def infer_location_from_area_or_room(
+    extraction: dict,
+    draft: TicketDraft,
+) -> None:
     """
     从 extraction["area"] 或 extraction["room"] 反向推断 building / floor。
 
@@ -104,3 +108,70 @@ def apply_extraction(draft: TicketDraft, extraction: dict, image_url: str | None
         draft.area = None
     if image_url and image_url not in draft.image_urls:
         draft.image_urls.append(image_url)
+
+
+def _make_conflict(field: str, text_value: str, image_value: str) -> dict:
+    return {
+        "field": field,
+        "text_value": text_value,
+        "image_value": image_value,
+        "text_source": "text",
+        "image_source": "image",
+    }
+
+
+def merge_extraction(
+    text: TextExtraction | None,
+    image: ImageAnalysis | None,
+    *,
+    user_priority: bool,
+) -> dict:
+    """图文冲突的唯一裁决点。返回一个 dict（兼容 apply_extraction / infer_location_from_area_or_room）。
+
+    策略：
+    - 文本字段优先：text 中非空字段直接采用（用户最权威）
+    - 图片补全：text 字段为空且 image 观察到值时，用图片字段补位
+    - user_priority=True：忽略图片观察到的所有字段（用户已表态以描述为准）
+    - description 例外：text 没说而图片清晰可见时用图片描述顶上，避免 description 为空
+    - needs_human / clarification_question / ambiguous_fields 直接透传 text 不与 image 混合
+    """
+    merged: dict = {}
+
+    text_data = text.model_dump() if text else {}
+    image_fields = (
+        image.visual_fields.model_dump()
+        if (image and not user_priority and not image.is_unclear)
+        else {}
+    )
+    conflicts: list[dict] = []
+
+    for key in ("description", "estate", "building", "floor", "area", "room"):
+        text_val = text_data.get(key)
+        image_val = image_fields.get(key)
+        if text_val and image_val:
+            if key == "description":
+                # 用户文字是故障事实主来源。图片描述只作为 RAG 辅助和附件证据，
+                # 不因故障现象差异打断报修流程。
+                merged[key] = text_val
+                continue
+            if text_val != image_val:
+                merged[key] = None
+                conflicts.append(_make_conflict(key, text_val, image_val))
+                continue
+            merged[key] = text_val
+        elif text_val:
+            merged[key] = text_val
+        elif image_val:
+            merged[key] = image_val
+        else:
+            merged[key] = None
+
+    merged["visit_time_text"] = text_data.get("visit_time_text")
+    merged["needs_human"] = text_data.get("needs_human", False)
+    merged["user_confirmed_description_priority"] = text_data.get(
+        "user_confirmed_description_priority", False
+    )
+    merged["clarification_question"] = text_data.get("clarification_question")
+    merged["ambiguous_fields"] = text_data.get("ambiguous_fields", []) or []
+    merged["_conflicts"] = conflicts
+    return merged

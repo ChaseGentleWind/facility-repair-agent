@@ -41,6 +41,7 @@ async def build_ticket(session: Session) -> dict:
             "area": draft.area,
             "room": draft.room,
         },
+        "raw_problem_description": draft.description or "",
         "problem_description": problem_description,
         "image_urls": draft.image_urls,
         "reporter": {"name": None, "phone": None},

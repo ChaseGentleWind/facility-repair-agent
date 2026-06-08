@@ -23,7 +23,7 @@ ENV/
 *.swo
 
 # 数据文件
-data/
+/data/
 *.db
 *.sqlite
 
@@ -35,4 +35,3 @@ logs/
 .DS_Store
 Thumbs.db
 
-docs/

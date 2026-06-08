@@ -65,6 +65,9 @@ async def lifespan(app: FastAPI):
 
     # 关闭时清理资源
     logger.info("🛑 应用关闭，清理资源...")
+    from app.services import llm_client
+    await llm_client.aclose()
+    logger.info("✅ LLM 客户端连接已关闭")
     if redis_client:
         await redis_client.aclose()
         logger.info("✅ Redis 连接已关闭")
