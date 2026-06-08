@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from app.agent.schemas import ImageAnalysis, VisualFields
 from app.agent.state import AgentState, Session, TicketDraft
 
 
@@ -128,7 +129,14 @@ def test_session_complex_serialization():
         expires_at=now + timedelta(seconds=1800),
         stall_count=2,
         last_missing=["visit_time"],
-        image_description="空调外机有明显漏水痕迹",
+        image_analysis=ImageAnalysis(
+            image_url="http://example.com/img.jpg",
+            visual_description="空调外机有明显漏水痕迹",
+            visual_fault_summary="空调外机漏水",
+            visual_fields=VisualFields(description="空调外机漏水"),
+            visual_confidence="high",
+            is_unclear=False,
+        ),
         user_confirmed_description_priority=True,
         pending_clarification={
             "question": "请问具体是哪个时间段不制冷？",
@@ -155,7 +163,7 @@ def test_session_complex_serialization():
     assert restored.history == session.history
     assert restored.stall_count == session.stall_count
     assert restored.last_missing == session.last_missing
-    assert restored.image_description == session.image_description
+    assert restored.image_analysis == session.image_analysis
     assert restored.user_confirmed_description_priority == session.user_confirmed_description_priority
     assert restored.pending_clarification == session.pending_clarification
     assert restored.ticket == session.ticket

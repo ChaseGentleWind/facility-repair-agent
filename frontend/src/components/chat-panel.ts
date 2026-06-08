@@ -103,7 +103,7 @@ export class ChatPanel extends LitElement {
   private _stateLabels: Record<string, string> = {
     GREETING: '等待您的描述',
     COLLECTING: '正在收集报修信息...',
-    WAITING_IMAGE: '等待上传现场照片',
+    WAITING_IMAGE: '可补充现场照片',
     CONFIRMING: '请确认报修信息',
     PREVIEW_READY: '预览已就绪，请提交或继续修改',
     SUBMITTED: '工单已提交',
@@ -130,6 +130,8 @@ export class ChatPanel extends LitElement {
       <message-list
         .messages=${st.messages}
         ?streaming=${st.isStreaming}
+        @draft-modify=${this._onDraftModify}
+        @draft-generate-preview=${this._onDraftGeneratePreview}
       ></message-list>
       <input-bar
         ?disabled=${st.isStreaming}
@@ -149,5 +151,13 @@ export class ChatPanel extends LitElement {
 
   private _onSendImage(e: CustomEvent<{ file: File; text: string | null }>) {
     this.store.sendImage(e.detail.file, e.detail.text ?? undefined)
+  }
+
+  private _onDraftModify() {
+    this.store.promptDraftModification()
+  }
+
+  private _onDraftGeneratePreview() {
+    this.store.generateDraftPreview()
   }
 }

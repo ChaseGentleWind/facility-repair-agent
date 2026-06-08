@@ -59,9 +59,6 @@ def after_collect_extract(state: GraphState) -> str:
     if missing:
         return NODE_COLLECT_DECIDE
 
-    if not session.draft.image_urls:
-        return NODE_ASK_IMAGE
-
     return NODE_RAG_CONFIRM
 
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 
+from app.agent.schemas import ImageAnalysis
 from app.config import settings
 
 
@@ -55,6 +56,7 @@ class TicketDraft:
         """用于展示的简化字典（给 LLM 和前端）"""
         d = {
             "description": self.description,
+            "raw_description": self.description,
             "estate": self.estate,
             "building": self.building,
             "floor": self.floor,
@@ -118,9 +120,10 @@ class Session:
     expires_at: datetime
     stall_count: int = 0  # 连续多轮缺失字段集合未变化的次数
     last_missing: list[str] = field(default_factory=list)  # 上一轮缺失字段列表
-    image_description: str | None = None  # AI 对用户上传图片的故障描述
-    user_confirmed_description_priority: bool = False  # 用户是否已确认"以描述为准"（跳过图文一致性检测）
-    pending_clarification: dict | None = None  # 上一轮 LLM 返回的澄清问题上下文 {"question": str, "asked_in_state": str}
+    image_analysis: ImageAnalysis | None = None  # 按当前 image_url 缓存的 VLM 结果，避免重复看图
+    user_confirmed_description_priority: bool = False  # 用户已确认"以描述为准"，触发 RAG ignore_image
+    pending_clarification: dict | None = None  # 上一轮澄清问题上下文 {"question": str, "asked_in_state": str}
+    pending_conflict: dict | None = None  # 图文/字段冲突，等待用户选择以文字或图片为准
     ticket: dict | None = None  # 生成的工单快照，提交时直接使用
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)  # 并发控制锁
 
@@ -136,15 +139,18 @@ class Session:
             "expires_at": self.expires_at.isoformat(),
             "stall_count": self.stall_count,
             "last_missing": self.last_missing,
-            "image_description": self.image_description,
+            "image_analysis": self.image_analysis.model_dump() if self.image_analysis else None,
             "user_confirmed_description_priority": self.user_confirmed_description_priority,
             "pending_clarification": self.pending_clarification,
+            "pending_conflict": self.pending_conflict,
             "ticket": self.ticket,
         }
 
     @classmethod
     def deserialize(cls, data: dict) -> Session:
-        """从字典恢复 Session 实例"""
+        """从字典恢复 Session 实例。遇到未知字段直接忽略；新旧字段不兼容时上层会重建会话。"""
+        image_analysis_data = data.get("image_analysis")
+        image_analysis = ImageAnalysis.model_validate(image_analysis_data) if image_analysis_data else None
         return cls(
             session_id=data["session_id"],
             client_id=data["client_id"],
@@ -155,9 +161,10 @@ class Session:
             expires_at=datetime.fromisoformat(data["expires_at"]),
             stall_count=data.get("stall_count", 0),
             last_missing=data.get("last_missing", []),
-            image_description=data.get("image_description"),
+            image_analysis=image_analysis,
             user_confirmed_description_priority=data.get("user_confirmed_description_priority", False),
             pending_clarification=data.get("pending_clarification"),
+            pending_conflict=data.get("pending_conflict"),
             ticket=data.get("ticket"),
         )
 

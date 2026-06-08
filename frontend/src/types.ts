@@ -14,10 +14,30 @@ export const DEFAULT_CONFIG: WidgetConfig = {
 
 export interface ChatMessage {
   role: 'user' | 'bot'
-  type: 'text' | 'image'
+  type: 'text' | 'image' | 'confirm_card'
   content: string
   imageUrl?: string
+  draftConfirm?: DraftConfirm
   timestamp: number
+}
+
+export interface DraftConfirm {
+  location?: {
+    estate?: string | null
+    building?: string | null
+    floor?: string | null
+    area?: string | null
+    room?: string | null
+  }
+  description?: string | null
+  visit_time?: string | null
+  image_urls?: string[]
+  fault_type?: {
+    code?: string | null
+    displayName?: string | null
+  }
+  repair_priority?: string | null
+  repair_type?: string | null
 }
 
 export type AgentState =
@@ -31,10 +51,11 @@ export type AgentState =
   | 'ESCALATED'
 
 export interface SSEEvent {
-  type: 'text_delta' | 'state_update' | 'ticket_ready' | 'human_service' | 'error' | 'done'
+  type: 'text_delta' | 'state_update' | 'draft_confirm' | 'ticket_ready' | 'human_service' | 'error' | 'done'
   content?: string
   state?: AgentState
-  collected?: Record<string, string>
+  collected?: Record<string, any>
+  draft?: DraftConfirm
   ticket?: Record<string, unknown>
   session_id?: string
   partial_ticket?: Record<string, unknown>

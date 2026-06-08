@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, AsyncIterator, Protocol
@@ -9,6 +10,8 @@ from uuid import uuid4
 
 from app.agent.state import AgentState, Session, TicketDraft
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis as AsyncRedis
@@ -152,7 +155,13 @@ class RedisSessionStore:
         data = await self._redis.get(key)
         if data is None:
             return None
-        return Session.deserialize(json.loads(data))
+        try:
+            return Session.deserialize(json.loads(data))
+        except Exception as exc:
+            # 硬切换：旧版 schema 反序列化失败时清理并视为不存在，由上层重建会话
+            logger.warning("session deserialize failed for %s, dropping: %s", session_id, exc)
+            await self._redis.delete(key)
+            return None
 
     async def save(self, session: Session) -> None:
         key = self._session_key(session.session_id)
