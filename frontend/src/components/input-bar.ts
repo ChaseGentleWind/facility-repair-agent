@@ -1,7 +1,13 @@
 import { LitElement, html, css, nothing } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
 import { sharedStyles } from '../styles/theme'
-import { SpeechService, speechSupported } from '../services/speech'
+import { speechSupported } from '../services/speech'
+import {
+  detectVoiceBackend,
+  startVoiceSession,
+  type VoiceBackend,
+  type VoiceSession,
+} from '../services/asr-router'
 
 @customElement('input-bar')
 export class InputBar extends LitElement {
@@ -212,38 +218,54 @@ export class InputBar extends LitElement {
   @state() private _pendingImage: File | null = null
   @state() private _previewUrl: string | null = null
   @state() private _showActionSheet = false
+  @state() private _voiceBackend: VoiceBackend = 'none'
   @property({ type: Boolean }) disabled = false
+  /** ASR WebSocket 端点。
+   *  - 留空（默认）→ 同源相对路径 /api/v1/asr/stream
+   *  - 'disabled' → 不启用 WS ASR，仅尝试 web-speech 降级
+   *  - 绝对地址（ws://localhost:8001/ws/asr）→ 沙箱联调用 */
+  @property({ type: String, attribute: 'asr-ws-url' }) asrWsUrl = ''
+  /** ASR 健康检查 URL，留空则跳过探针直接尝试连接 */
+  @property({ type: String, attribute: 'asr-health-url' }) asrHealthUrl = ''
 
-  private _speech: SpeechService | null = null
+  private _voiceSession: VoiceSession | null = null
+  private _committedText = ''  // 已固化（final）的部分；partial 显示时基于此叠加
+
+  private get _effectiveWsUrl(): string | undefined {
+    if (this.asrWsUrl === 'disabled') return undefined
+    return this.asrWsUrl || '/api/v1/asr/stream'
+  }
 
   connectedCallback() {
     super.connectedCallback()
-    if (speechSupported) {
-      this._speech = new SpeechService({
-        onInterim: (text) => {
-          this._text = text
-        },
-        onFinal: (text) => {
-          this._recording = false
-          if (text.trim()) {
-            this._text = text.trim()
-          }
-        },
-        onEnd: () => {
-          this._recording = false
-        },
-      })
+    void this._refreshVoiceBackend()
+  }
+
+  updated(changed: Map<string, unknown>) {
+    if (changed.has('asrWsUrl') || changed.has('asrHealthUrl')) {
+      void this._refreshVoiceBackend()
     }
+  }
+
+  private async _refreshVoiceBackend() {
+    const { backend } = await detectVoiceBackend({
+      wsUrl: this._effectiveWsUrl,
+      healthUrl: this.asrHealthUrl || undefined,
+    })
+    this._voiceBackend = backend
   }
 
   disconnectedCallback() {
     super.disconnectedCallback()
     if (this._previewUrl) URL.revokeObjectURL(this._previewUrl)
+    this._voiceSession?.abort()
+    this._voiceSession = null
   }
 
   render() {
     const placeholder = this._recording ? '正在聆听...' : '请输入您的问题...'
     const canSend = !this.disabled && (!!this._text.trim() || !!this._pendingImage)
+    const showMic = this._voiceBackend !== 'none' || speechSupported
 
     return html`
       ${this._showActionSheet
@@ -286,7 +308,7 @@ export class InputBar extends LitElement {
         : nothing}
 
       <div class="input-row">
-        ${speechSupported
+        ${showMic
           ? html`
               <button
                 class="btn-icon btn-mic ${this._recording ? 'recording' : ''}"
@@ -430,17 +452,46 @@ export class InputBar extends LitElement {
     this._pendingImage = null
   }
 
-  private _micDown(e: Event) {
+  private async _micDown(e: Event) {
     e.preventDefault()
-    if (this.disabled || !this._speech) return
+    if (this.disabled || this._recording) return
+
+    this._committedText = this._text  // 保留用户已输入的文字，partial 在其后追加
     this._recording = true
-    this._text = ''
-    this._speech.start()
+
+    try {
+      this._voiceSession = await startVoiceSession(
+        { wsUrl: this._effectiveWsUrl, healthUrl: this.asrHealthUrl || undefined },
+        {
+          onPartial: (text) => {
+            this._text = this._committedText + text
+          },
+          onFinal: (text) => {
+            const finalText = (this._committedText + text).trim()
+            if (finalText) this._text = finalText
+            this._committedText = ''
+          },
+          onError: (msg) => {
+            console.warn('[voice] error:', msg)
+          },
+          onEnd: () => {
+            this._recording = false
+            this._voiceSession = null
+          },
+        },
+      )
+    } catch (err) {
+      console.warn('[voice] session start failed:', err)
+      this._recording = false
+      this._voiceSession = null
+      // 探针缓存已在 router 内清理；下次按下会重新探针，自然降级到 web-speech
+      void this._refreshVoiceBackend()
+    }
   }
 
   private _micUp(e: Event) {
     e.preventDefault()
-    if (!this._speech || !this._recording) return
-    this._speech.stop()
+    if (!this._recording) return
+    void this._voiceSession?.stop()
   }
 }
